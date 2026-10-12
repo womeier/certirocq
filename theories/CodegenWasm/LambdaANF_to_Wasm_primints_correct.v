@@ -411,6 +411,122 @@ Proof with eassumption.
     now rewrite Hmemlength1 Hmemlength2 Hmemlength3.
 Qed.
 
+Lemma carry_op_setup (res : uint63) : forall state sr fr m gmp c0_tag c1_tag,
+  INV fenv sr fr ->
+  get_ctor_ord cenv c0_tag = Ret C0_ord ->
+  get_ctor_arity cenv c0_tag = Ret 1%nat ->
+  get_ctor_ord cenv c1_tag = Ret C1_ord ->
+  get_ctor_arity cenv c1_tag = Ret 1%nat ->
+  smem sr (f_inst fr) = Some m ->
+  (Z.of_N gmp + Z.of_N 52 <= Z.of_N (mem_length m) < Int32.modulus)%Z ->
+  sglob_val sr (f_inst fr) glob_mem_ptr = Some (VAL_num (VAL_int32 (N_to_i32 gmp))) ->
+  exists sr1 sr_C0 m_C0 sr_C1 m_C1,
+    supdate_glob sr (f_inst fr) glob_tmp1 (VAL_num (VAL_int64 (Int64.repr (to_Z res)))) = Some sr1
+    /\ smem sr1 (f_inst fr) = Some m
+    /\ sglob_val sr1 (f_inst fr) glob_tmp1 = Some (VAL_num (VAL_int64 (Int64.repr (to_Z res))))
+    /\ (reduce_trans
+          (state, sr1, fr, map AI_basic (make_carry glob_mem_ptr C0_ord glob_tmp1))
+          (state, sr_C0, fr, [$VN (VAL_int32 (N_to_i32 (gmp + 8)%N))])
+       /\ INV fenv sr_C0 fr
+       /\ smem sr_C0 (f_inst fr) = Some m_C0
+       /\ sglob_val sr_C0 (f_inst fr) glob_mem_ptr = Some (VAL_num (VAL_int32 (N_to_i32 (gmp + 16))))
+       /\ (forall a, (a + 8 <= gmp)%N -> load_i64 m a = load_i64 m_C0 a)
+       /\ (forall a, (a + 4 <= gmp)%N -> load_i32 m a = load_i32 m_C0 a)
+       /\ s_funcs sr = s_funcs sr_C0
+       /\ mem_length m = mem_length m_C0
+       /\ (Z.of_N (gmp + 16) + 8 <= Z.of_N (mem_length m_C0) < Int32.modulus)%Z
+       /\ repr_val_LambdaANF_Wasm cenv fenv penv (Vconstr c0_tag [Vprim (AstCommon.primInt ; res)]) sr_C0 (f_inst fr) (Val_ptr (gmp + 8)%N))
+    /\ (reduce_trans
+          (state, sr1, fr, map AI_basic (make_carry glob_mem_ptr C1_ord glob_tmp1))
+          (state, sr_C1, fr, [$VN (VAL_int32 (N_to_i32 (gmp + 8)%N))])
+       /\ INV fenv sr_C1 fr
+       /\ smem sr_C1 (f_inst fr) = Some m_C1
+       /\ sglob_val sr_C1 (f_inst fr) glob_mem_ptr = Some (VAL_num (VAL_int32 (N_to_i32 (gmp + 16))))
+       /\ (forall a, (a + 8 <= gmp)%N -> load_i64 m a = load_i64 m_C1 a)
+       /\ (forall a, (a + 4 <= gmp)%N -> load_i32 m a = load_i32 m_C1 a)
+       /\ s_funcs sr = s_funcs sr_C1
+       /\ mem_length m = mem_length m_C1
+       /\ (Z.of_N (gmp + 16) + 8 <= Z.of_N (mem_length m_C1) < Int32.modulus)%Z
+       /\ repr_val_LambdaANF_Wasm cenv fenv penv (Vconstr c1_tag [Vprim (AstCommon.primInt ; res)]) sr_C1 (f_inst fr) (Val_ptr (gmp + 8)%N)).
+Proof.
+  intros state sr fr m gmp c0_tag c1_tag HINV Hord0 Harity0 Hord1 Harity1 Hmem HgmpBounds Hgmp.
+  have I := HINV. destruct I as [_ [_ [_ [_ [_ [_ [_ [_ [_ [_ [HnoGlobDups [_ [_ [Hmult2 [_ Hi64tempsW]]]]]]]]]]]]]]].
+  assert (Hglob_tmp1: i64_glob glob_tmp1) by now constructor.
+  destruct (Hi64tempsW _ Hglob_tmp1 (VAL_int64 (Int64.repr (to_Z res)))) as [sr1 Hsr1].
+  assert (HINV1 : INV fenv sr1 fr)
+      by now apply update_global_preserves_INV with (sr:=sr) (i:=glob_tmp1) (m:=m)
+                           (num:=(VAL_int64 (Int64.repr (to_Z res)))).
+  assert (Hsfs1 : s_funcs sr = s_funcs sr1) by now eapply update_global_preserves_funcs.
+  assert (Hmem1 : smem sr1 (f_inst fr) = Some m)
+      by now apply update_global_preserves_memory in Hsr1.
+  assert (Hgmp1 : sglob_val sr1 (f_inst fr) glob_mem_ptr = Some (VAL_num (VAL_int32 (N_to_i32 gmp)))). {
+    now apply update_global_get_other with (j:=glob_tmp1) (sr:=sr) (num:=(VAL_int64 (Int64.repr (to_Z res)))). }
+  assert (HresVal : sglob_val sr1 (f_inst fr) glob_tmp1 = Some (VAL_num (VAL_int64 (Int64.repr (to_Z res)))))
+      by now apply update_global_get_same with (sr:=sr).
+
+  assert (-1 < Z.of_N gmp < Int32.modulus)%Z by lia.
+
+  destruct (Hmult2 _ _ Hmem Hgmp H) as [n Hgmpmult2]; clear H.
+
+  have HcarryRedC0 := make_carry_reduce C0_ord state sr1 fr m _ _ HINV1 Hmem1 Hgmp1 HgmpBounds HresVal.
+  destruct HcarryRedC0 as [sr_C0 [m_C0 [Hmake_carry_red_C0 [HINV_C0 [Hmem_C0 [Hgmp_C0 [HloadRes_C0 [HloadOrd_C0 [HloadArg_C0 [Hpres32_C0 [Hpres64_C0 [Hsfs_C0' Hmemlength_C0]]]]]]]]]]]].
+
+  assert (HnewgmpBoundsC0: (Z.of_N (gmp + 16) + 8 <= Z.of_N (mem_length m_C0) < Int32.modulus)%Z) by lia.
+
+  assert (HconstrArgsC0: repr_val_constr_args_LambdaANF_Wasm cenv fenv penv [:: Vprim (AstCommon.primInt; res)] sr_C0 (f_inst fr) (4 + (gmp+8))%N). {
+    eapply Rcons_l with (wal:=(Val_ptr gmp)) (gmp:=(gmp+16)%N); eauto; try lia.
+    now replace (4 + (gmp + 8))%N with (gmp + 12)%N by lia.
+    eapply Rprim_v with (gmp:=(gmp + 16)%N); try lia; eauto.
+    now constructor. }
+
+  assert (HvalC0: repr_val_LambdaANF_Wasm cenv fenv penv (Vconstr c0_tag [Vprim (AstCommon.primInt ; res)]) sr_C0 (f_inst fr) (Val_ptr (gmp + 8)%N)). {
+      eapply Rconstr_boxed_v with (v:=Int32.repr (Z.of_N C0_ord)) (sr:=sr_C0) (m:=m_C0) (gmp:=(gmp+16)%N) (addr:=(gmp + 8)%N) (arity:=1) (ord:=C0_ord); auto; try lia.
+      now exists (n+4)%N. }
+
+  have HcarryRedC1 := make_carry_reduce C1_ord state sr1 fr m _ _ HINV1 Hmem1 Hgmp1 HgmpBounds HresVal.
+  destruct HcarryRedC1 as [sr_C1 [m_C1 [Hmake_carry_red_C1 [HINV_C1 [Hmem_C1 [Hgmp_C1 [HloadRes_C1 [HloadOrd_C1 [HloadArg_C1 [Hpres32_C1 [Hpres64_C1 [Hsfs_C1' Hmemlength_C1]]]]]]]]]]]].
+
+  assert (HnewgmpBoundsC1: (Z.of_N (gmp + 16) + 8 <= Z.of_N (mem_length m_C1) < Int32.modulus)%Z) by lia.
+
+  assert (HconstrArgsC1: repr_val_constr_args_LambdaANF_Wasm cenv fenv penv [:: Vprim (AstCommon.primInt; res)] sr_C1  (f_inst fr) (4 + (gmp+8))%N). {
+    eapply Rcons_l with (wal:=(Val_ptr gmp)) (gmp:=(gmp+16)%N); eauto; try lia.
+    now replace (4 + (gmp + 8))%N with (gmp + 12)%N by lia.
+    eapply Rprim_v with (gmp:=(gmp + 16)%N); try lia; eauto.
+    now constructor. }
+
+  assert (HvalC1: repr_val_LambdaANF_Wasm cenv fenv penv (Vconstr c1_tag [Vprim (AstCommon.primInt ; res)]) sr_C1 (f_inst fr) (Val_ptr (gmp + 8)%N)). {
+    eapply Rconstr_boxed_v with (v:=Int32.repr (Z.of_N C1_ord)) (t:=c1_tag) (sr:=sr_C1) (m:=m_C1) (gmp:=(gmp+16)%N) (addr:=(gmp + 8)%N) (arity:=1) (ord:=C1_ord); auto; try lia.
+    now exists (n+4)%N. }
+
+  exists sr1, sr_C0, m_C0, sr_C1, m_C1.
+  split; [exact Hsr1 |].
+  split; [exact Hmem1 |].
+  split; [exact HresVal |].
+  split.
+  - (* C0 branch context *)
+    split; [exact Hmake_carry_red_C0 |].
+    split; [exact HINV_C0 |].
+    split; [exact Hmem_C0 |].
+    split; [exact Hgmp_C0 |].
+    split; [exact Hpres64_C0 |].
+    split; [exact Hpres32_C0 |].
+    split; [etransitivity; [exact Hsfs1 | exact Hsfs_C0'] |].
+    split; [exact Hmemlength_C0 |].
+    split; [exact HnewgmpBoundsC0 |].
+    exact HvalC0.
+  - (* C1 branch context *)
+    split; [exact Hmake_carry_red_C1 |].
+    split; [exact HINV_C1 |].
+    split; [exact Hmem_C1 |].
+    split; [exact Hgmp_C1 |].
+    split; [exact Hpres64_C1 |].
+    split; [exact Hpres32_C1 |].
+    split; [etransitivity; [exact Hsfs1 | exact Hsfs_C1'] |].
+    split; [exact Hmemlength_C1 |].
+    split; [exact HnewgmpBoundsC1 |].
+    exact HvalC1.
+Qed.
+
 Lemma addc_reduce (x y : localidx) :
   forall state sr fr m gmp addrx addry bsx bsy n1 n2 c0_tag c1_tag it_carry v,
     INV fenv sr fr ->
@@ -444,58 +560,14 @@ Lemma addc_reduce (x y : localidx) :
              repr_val_LambdaANF_Wasm cenv fenv penv val sr' (f_inst fr) wal).
 Proof with eassumption.
   intros ??????????????? HINV Hc0 Hc1 Hv Hmem [Hxinframe  [Hloadx Hdesx]] [Hyinframe [Hloady Hdesy]] HgmpBounds Hgmp.
-  have I := HINV. destruct I as [_ [_ [_ [_ [_ [_ [_ [_ [_ [_ [HnoGlobDups [_ [_ [Hmult2 [_ Hi64tempsW]]]]]]]]]]]]]]].
-  assert (Hglob_tmp1: i64_glob glob_tmp1) by now constructor.
-  destruct (Hi64tempsW _ Hglob_tmp1 (VAL_int64 (Int64.repr (to_Z (n1 + n2)%uint63))))
-        as [sr1 Hsr1].
-  assert (HINV1 : INV fenv sr1 fr)
-      by now apply update_global_preserves_INV with (sr:=sr) (i:=glob_tmp1) (m:=m)
-                           (num:=(VAL_int64 (Int64.repr (to_Z (n1 + n2)%uint63)))).
-  assert (Hsfs1 : s_funcs sr = s_funcs sr1) by now eapply update_global_preserves_funcs.
-  assert (Hmem1 : smem sr1 (f_inst fr) = Some m)
-      by now apply update_global_preserves_memory in Hsr1.
-  assert (Hgmp1 : sglob_val sr1 (f_inst fr) glob_mem_ptr = Some (VAL_num (VAL_int32 (N_to_i32 gmp)))). {
-    now apply update_global_get_other with (j:=glob_tmp1) (sr:=sr) (num:=(VAL_int64 (Int64.repr (to_Z (n1 + n2)%uint63)))). }
-  assert (HresVal : sglob_val sr1 (f_inst fr) glob_tmp1 = Some (VAL_num (VAL_int64 (Int64.repr (to_Z (n1 + n2)%uint63)))))
-      by now apply update_global_get_same with (sr:=sr).
-
-  assert (-1 < Z.of_N gmp < Int32.modulus)%Z by lia.
-
-  destruct (Hmult2 _ _ Hmem Hgmp H) as [n Hgmpmult2]; clear H.
-
-  have HcarryRedC0 := make_carry_reduce C0_ord state sr1 fr m _ _ HINV1 Hmem1 Hgmp1 HgmpBounds HresVal.
-  destruct HcarryRedC0 as [sr_C0 [m_C0 [Hmake_carry_red_C0 [HINV_C0 [Hmem_C0 [Hgmp_C0 [HloadRes_C0 [ HloadOrd_C0 [HloadArg_C0 [Hpres64_C0 [Hpres32_C0 [Hsfs_C0 Hmemlength_C0]]]]]]]]]]]].
-
-  assert (HnewgmpBoundsC0: (Z.of_N (gmp + 16) + 8 <= Z.of_N (mem_length m_C0) < Int32.modulus)%Z) by lia.
-
-  assert (HconstrArgsC0: repr_val_constr_args_LambdaANF_Wasm cenv fenv penv [:: Vprim (AstCommon.primInt; (n1 + n2)%uint63)] sr_C0 (f_inst fr) (4 + (gmp+8))%N). {
-    eapply Rcons_l with (wal:=(Val_ptr gmp)) (gmp:=(gmp+16)%N); eauto; try lia.
-    now replace (4 + (gmp + 8))%N with (gmp + 12)%N by lia.
-    eapply Rprim_v with (gmp:=(gmp + 16)%N); try lia; eauto.
-    now constructor. }
-
-  assert (HvalC0: repr_val_LambdaANF_Wasm cenv fenv penv (Vconstr c0_tag [Vprim (AstCommon.primInt ; (n1 + n2)%uint63)]) sr_C0 (f_inst fr) (Val_ptr (gmp + 8)%N)). {
-      eapply Rconstr_boxed_v with (v:=Int32.repr (Z.of_N C0_ord)) (sr:=sr_C0) (m:=m_C0) (gmp:=(gmp+16)%N) (addr:=(gmp + 8)%N) (arity:=1) (ord:=C0_ord); auto; try lia.
-      - unfold get_ctor_ord; now rewrite Hc0.
-      - unfold get_ctor_arity; now rewrite Hc0.
-      - now exists (n+4)%N. }
-
-  have HcarryRedC1 := make_carry_reduce C1_ord state sr1 fr m _ _ HINV1 Hmem1 Hgmp1 HgmpBounds HresVal.
-  destruct HcarryRedC1 as [sr_C1 [m_C1 [Hmake_carry_red_C1 [HINV_C1 [Hmem_C1 [Hgmp_C1 [HloadRes_C1 [ HloadOrd_C1 [HloadArg_C1 [Hpres64_C1 [Hpres32_C1 [Hsfs_C1 Hmemlength_C1]]]]]]]]]]]].
-
-  assert (HnewgmpBoundsC1: (Z.of_N (gmp + 16) + 8 <= Z.of_N (mem_length m_C1) < Int32.modulus)%Z) by lia.
-
-  assert (HconstrArgsC1: repr_val_constr_args_LambdaANF_Wasm cenv fenv penv [:: Vprim (AstCommon.primInt; (n1 + n2)%uint63)] sr_C1  (f_inst fr) (4 + (gmp+8))%N). {
-    eapply Rcons_l with (wal:=(Val_ptr gmp)) (gmp:=(gmp+16)%N); eauto; try lia.
-    now replace (4 + (gmp + 8))%N with (gmp + 12)%N by lia.
-    eapply Rprim_v with (gmp:=(gmp + 16)%N); try lia; eauto.
-    now constructor. }
-
-  assert (HvalC1: repr_val_LambdaANF_Wasm cenv fenv penv (Vconstr c1_tag [Vprim (AstCommon.primInt ; (n1 + n2)%uint63)]) sr_C1 (f_inst fr) (Val_ptr (gmp + 8)%N)). {
-    eapply Rconstr_boxed_v with (v:=Int32.repr (Z.of_N C1_ord)) (t:=c1_tag) (sr:=sr_C1) (m:=m_C1) (gmp:=(gmp+16)%N) (addr:=(gmp + 8)%N) (arity:=1) (ord:=C1_ord); auto; try lia.
-    - unfold get_ctor_ord; now rewrite Hc1.
-    - unfold get_ctor_arity; now rewrite Hc1.
-    - now exists (n+4)%N. }
+  assert (Hord0 : get_ctor_ord cenv c0_tag = Ret C0_ord) by now unfold get_ctor_ord; rewrite Hc0.
+  assert (Harity0 : get_ctor_arity cenv c0_tag = Ret 1%nat) by now unfold get_ctor_arity; rewrite Hc0.
+  assert (Hord1 : get_ctor_ord cenv c1_tag = Ret C1_ord) by now unfold get_ctor_ord; rewrite Hc1.
+  assert (Harity1 : get_ctor_arity cenv c1_tag = Ret 1%nat) by now unfold get_ctor_arity; rewrite Hc1.
+  destruct (carry_op_setup (n1 + n2)%uint63 state sr fr m gmp c0_tag c1_tag HINV Hord0 Harity0 Hord1 Harity1 Hmem HgmpBounds Hgmp)
+    as [sr1 [sr_C0 [m_C0 [sr_C1 [m_C1 [Hsr1 [Hmem1 [HresVal [HC0 HC1]]]]]]]]].
+  destruct HC0 as [Hmake_carry_red_C0 [HINV_C0 [Hmem_C0 [Hgmp_C0 [Hpres64_C0 [Hpres32_C0 [Hsfs_C0 [Hmemlength_C0 [HnewgmpBoundsC0 HvalC0]]]]]]]]].
+  destruct HC1 as [Hmake_carry_red_C1 [HINV_C1 [Hmem_C1 [Hgmp_C1 [Hpres64_C1 [Hpres32_C1 [Hsfs_C1 [Hmemlength_C1 [HnewgmpBoundsC1 HvalC1]]]]]]]]].
 
   unfold LambdaANF_primInt_carry_fun in Hv.
   destruct (Z_lt_dec (to_Z (n1 + n2)%uint63) (to_Z n1)) as [Hlt | Hlt].
@@ -522,9 +594,9 @@ Proof with eassumption.
       dostep_nary 2. constructor; apply rs_binop_success=>//.
       rewrite ->uint63_add_i64_add.
       (* Temporarily store the result in a global *)
-      dostep_nary 1. eapply r_global_set'...
+      dostep_nary 1. eapply r_global_set' with (s' := sr1); eassumption.
       (* Put the result on the stack again *)
-      dostep_nary 0. eapply r_global_get...
+      dostep_nary 0. eapply r_global_get'...
       (* Load and deserialise value of x *)
       dostep_nary_eliml 0 1. eapply r_local_get...
       dostep_nary_eliml 1 1. eapply r_load_success...
@@ -540,7 +612,7 @@ Proof with eassumption.
     intros.
     eapply val_relation_depends_on_mem_smaller_than_gmp_and_funcs with (sr:=sr) (m:=m) (gmp:=gmp) (gmp':=(gmp + 16)%N);
       eauto; try lia.
-    now rewrite Hsfs1. }
+  }
   { (* There is overflow <-> x + y < x *)
     rewrite addc_def_spec in Hv. unfold addc_def in Hv.
     replace (n1 + n2 <? n1)%uint63 with false in Hv by lia.
@@ -572,9 +644,9 @@ Proof with eassumption.
       now apply rt_refl. }
     repeat (split; first congruence).
     intros.
-    eapply val_relation_depends_on_mem_smaller_than_gmp_and_funcs
-      with (sr:=sr) (m:=m) (gmp:=gmp) (gmp':=(gmp + 16)%N); eauto; try lia.
-      now rewrite Hsfs1. }
+    eapply val_relation_depends_on_mem_smaller_than_gmp_and_funcs with (sr:=sr) (m:=m) (gmp:=gmp) (gmp':=(gmp + 16)%N);
+      eauto; try lia.
+  }
 Qed.
 
 Lemma addcarryc_reduce (x y : localidx) :
@@ -609,57 +681,14 @@ Lemma addcarryc_reduce (x y : localidx) :
              repr_val_LambdaANF_Wasm cenv fenv penv val sr' (f_inst fr) wal).
 Proof with eassumption.
   intros ??????????????? HINV Hc0 Hc1 Hv Hmem [Hxinframe  [Hloadx Hdesx]] [Hyinframe [Hloady Hdesy]] HgmpBounds Hgmp.
-  have I := HINV. destruct I as [_ [_ [_ [_ [_ [_ [_ [_ [_ [_ [HnoGlobDups [_ [_ [Hmult2 [_ Hi64tempsW]]]]]]]]]]]]]]].
-  assert (Hglob_tmp1: i64_glob glob_tmp1) by now constructor.
-  destruct (Hi64tempsW _ Hglob_tmp1 (VAL_int64 (Int64.repr (to_Z (n1 + n2 + 1)%uint63)))) as [sr1 Hsr1].
-  assert (HINV1 : INV fenv sr1 fr). {
-    apply update_global_preserves_INV with (sr:=sr) (i:=glob_tmp1) (m:=m) (num:=(VAL_int64 (Int64.repr (to_Z (n1 + n2 + 1)%uint63))))=>/=//. tauto. }
-  assert (Hsfs1 : s_funcs sr = s_funcs sr1)
-      by now eapply update_global_preserves_funcs; eauto.
-  assert (Hmem1 : smem sr1 (f_inst fr) = Some m)
-      by now apply update_global_preserves_memory in Hsr1.
-  assert (Hgmp1 : sglob_val sr1 (f_inst fr) glob_mem_ptr = Some (VAL_num (VAL_int32 (N_to_i32 gmp)))). {
-    now apply update_global_get_other with (j:=glob_tmp1) (sr:=sr) (num:=(VAL_int64 (Int64.repr (to_Z (n1 + n2 + 1)%uint63)))). }
-  assert (HresVal : sglob_val sr1 (f_inst fr) glob_tmp1 = Some (VAL_num (VAL_int64 (Int64.repr (to_Z (n1 + n2 + 1)%uint63)))))
-      by now apply update_global_get_same with (sr:=sr); auto.
-
-  assert (-1 < Z.of_N gmp < Int32.modulus)%Z by lia.
-
-  destruct (Hmult2 _ _ Hmem Hgmp H) as [n Hgmpmult2]; clear H.
-
-  have HcarryRedC0 := make_carry_reduce C0_ord state sr1 fr m _ _ HINV1 Hmem1 Hgmp1 HgmpBounds HresVal.
-  destruct HcarryRedC0 as [sr_C0 [m_C0 [Hmake_carry_red_C0 [HINV_C0 [Hmem_C0 [Hgmp_C0 [HloadRes_C0 [ HloadOrd_C0 [HloadArg_C0 [Hpres64_C0 [Hpres32_C0 [Hsfs_C0 Hmemlength_C0]]]]]]]]]]]].
-
-  assert (HnewgmpBoundsC0: (Z.of_N (gmp + 16) + 8 <= Z.of_N (mem_length m_C0) < Int32.modulus)%Z) by lia.
-
-  assert (HconstrArgsC0: repr_val_constr_args_LambdaANF_Wasm cenv fenv penv [:: Vprim (AstCommon.primInt; (n1 + n2 + 1)%uint63)] sr_C0 (f_inst fr) (4 + (gmp+8))%N). {
-    eapply Rcons_l with (wal:=(Val_ptr gmp)) (gmp:=(gmp+16)%N); try lia; eauto.
-    unfold wasm_value_to_i32, wasm_value_to_u32; replace (4 + (gmp + 8))%N with (gmp +12)%N;[auto|lia].
-    eapply Rprim_v with (gmp:=(gmp + 16)%N); try lia; eauto.
-    now constructor. }
-
-  assert (HvalC0: repr_val_LambdaANF_Wasm cenv fenv penv (Vconstr c0_tag [Vprim (AstCommon.primInt ; (n1 + n2 + 1)%uint63)]) sr_C0 (f_inst fr) (Val_ptr (gmp + 8)%N)). {
-      eapply Rconstr_boxed_v with (v:=Int32.repr (Z.of_N C0_ord)) (t:=c0_tag) (sr:=sr_C0) (m:=m_C0) (gmp:=(gmp+16)%N) (addr:=(gmp + 8)%N) (arity:=1) (ord:=C0_ord); auto; try lia.
-      - now rewrite /get_ctor_ord Hc0.
-      - now rewrite /get_ctor_arity Hc0.
-      - now exists (n+4)%N. }
-
-  have HcarryRedC1 := make_carry_reduce C1_ord state sr1 fr m _ _ HINV1 Hmem1 Hgmp1 HgmpBounds HresVal.
-  destruct HcarryRedC1 as [sr_C1 [m_C1 [Hmake_carry_red_C1 [HINV_C1 [Hmem_C1 [Hgmp_C1 [HloadRes_C1 [ HloadOrd_C1 [HloadArg_C1 [Hpres64_C1 [Hpres32_C1 [Hsfs_C1 Hmemlength_C1]]]]]]]]]]]].
-
-  assert (HnewgmpBoundsC1: (Z.of_N (gmp + 16) + 8 <= Z.of_N (mem_length m_C1) < Int32.modulus)%Z) by lia.
-
-  assert (HconstrArgsC1: repr_val_constr_args_LambdaANF_Wasm cenv fenv penv [:: Vprim (AstCommon.primInt; (n1 + n2 + 1)%uint63)] sr_C1  (f_inst fr) (4 + (gmp+8))%N). {
-    eapply Rcons_l with (wal:=(Val_ptr gmp)) (gmp:=(gmp+16)%N); try lia; eauto.
-    now replace (4 + (gmp + 8))%N with (gmp + 12)%N by lia.
-    eapply Rprim_v with (gmp:=(gmp + 16)%N); try lia; eauto.
-    now constructor. }
-
-  assert (HvalC1: repr_val_LambdaANF_Wasm cenv fenv penv (Vconstr c1_tag [Vprim (AstCommon.primInt ; (n1 + n2 + 1)%uint63)]) sr_C1 (f_inst fr) (Val_ptr (gmp + 8)%N)). {
-    eapply Rconstr_boxed_v with (v:=Int32.repr (Z.of_N C1_ord)) (t:=c1_tag) (sr:=sr_C1) (m:=m_C1) (gmp:=(gmp+16)%N) (addr:=(gmp + 8)%N) (arity:=1) (ord:=C1_ord); auto; try lia.
-      - now rewrite /get_ctor_ord Hc1.
-      - now rewrite /get_ctor_arity Hc1.
-      - now exists (n+4)%N. }
+  assert (Hord0 : get_ctor_ord cenv c0_tag = Ret C0_ord) by now unfold get_ctor_ord; rewrite Hc0.
+  assert (Harity0 : get_ctor_arity cenv c0_tag = Ret 1%nat) by now unfold get_ctor_arity; rewrite Hc0.
+  assert (Hord1 : get_ctor_ord cenv c1_tag = Ret C1_ord) by now unfold get_ctor_ord; rewrite Hc1.
+  assert (Harity1 : get_ctor_arity cenv c1_tag = Ret 1%nat) by now unfold get_ctor_arity; rewrite Hc1.
+  destruct (carry_op_setup (n1 + n2 + 1)%uint63 state sr fr m gmp c0_tag c1_tag HINV Hord0 Harity0 Hord1 Harity1 Hmem HgmpBounds Hgmp)
+    as [sr1 [sr_C0 [m_C0 [sr_C1 [m_C1 [Hsr1 [Hmem1 [HresVal [HC0 HC1]]]]]]]]].
+  destruct HC0 as [Hmake_carry_red_C0 [HINV_C0 [Hmem_C0 [Hgmp_C0 [Hpres64_C0 [Hpres32_C0 [Hsfs_C0 [Hmemlength_C0 [HnewgmpBoundsC0 HvalC0]]]]]]]]].
+  destruct HC1 as [Hmake_carry_red_C1 [HINV_C1 [Hmem_C1 [Hgmp_C1 [Hpres64_C1 [Hpres32_C1 [Hsfs_C1 [Hmemlength_C1 [HnewgmpBoundsC1 HvalC1]]]]]]]]].
 
   unfold LambdaANF_primInt_carry_fun in Hv.
   destruct (Z_le_dec (to_Z (n1 + n2 + 1)%uint63) (to_Z n1)) as [Hlt | Hlt].
@@ -703,9 +732,8 @@ Proof with eassumption.
       now apply rt_refl. }
     repeat (split; first congruence).
     intros. eapply val_relation_depends_on_mem_smaller_than_gmp_and_funcs with (sr:=sr) (m:=m) (gmp:=gmp) (gmp':=(gmp + 16)%N);
-     eauto; try lia.
-     now rewrite Hsfs1. }
-  { (* There is overflow <-> x + y < x *)
+     eauto; try lia. }
+  { (* There is no overflow <-> x + y + 1 > x *)
     rewrite addcarryc_def_spec in Hv. unfold addcarryc_def, addcarry in Hv.
     replace (n1 + n2 + 1 <=? n1)%uint63 with false in Hv by lia.
     exists sr_C0, m_C0.
@@ -737,8 +765,7 @@ Proof with eassumption.
       now apply rt_refl. }
     repeat (split; first congruence).
     intros; eapply val_relation_depends_on_mem_smaller_than_gmp_and_funcs with (sr:=sr) (m:=m) (gmp:=gmp) (gmp':=(gmp + 16)%N);
-      eauto; try lia.
-    now rewrite Hsfs1. }
+      eauto; try lia. }
 Qed.
 
 Lemma subc_reduce (x y : localidx) :
@@ -748,8 +775,11 @@ Lemma subc_reduce (x y : localidx) :
     M.get c1_tag cenv = Some (Build_ctor_ty_info (Common.BasicAst.nNamed "C1"%bs) (Common.BasicAst.nNamed "carry"%bs) it_carry 1%N C1_ord) ->
     LambdaANF_primInt_carry_fun c0_tag c1_tag subc n1 n2 = v ->
     smem sr (f_inst fr) = Some m ->
+    (* Local x holds address to 1st i64 *)
     local_holds_address_to_i64 sr fr x addrx (Int64.repr (to_Z n1)) m bsx ->
+    (* Local y holds address to 2nd i64 *)
     local_holds_address_to_i64 sr fr y addry (Int64.repr (to_Z n2)) m bsy ->
+    (* There is enough free memory available *)
     (Z.of_N gmp + Z.of_N 52 <= Z.of_N (mem_length m) < Int32.modulus)%Z ->
     sglob_val sr (f_inst fr) glob_mem_ptr = Some (VAL_num (VAL_int32 (N_to_i32 gmp))) ->
     exists (sr': store_record) m',
@@ -759,65 +789,25 @@ Lemma subc_reduce (x y : localidx) :
             (state, sr', fr, ($VN (VAL_int32 (N_to_i32 (gmp + 8)%N))) :: instrs))
       /\ INV fenv sr' fr
       /\ smem sr' (f_inst fr) = Some m'
+      (* gmp points to next free segment of memory *)
       /\ sglob_val sr' (f_inst fr) glob_mem_ptr = Some (VAL_num (VAL_int32 (N_to_i32 (gmp + 16))))
       /\ s_funcs sr = s_funcs sr'
       /\ mem_length m = mem_length m'
       /\ repr_val_LambdaANF_Wasm cenv fenv penv v sr' (f_inst fr) (Val_ptr (gmp + 8)%N)
+      (* Values are preserved *)
       /\ (forall (wal : wasm_value) (val : term.val),
              repr_val_LambdaANF_Wasm cenv fenv penv val sr (f_inst fr) wal ->
              repr_val_LambdaANF_Wasm cenv fenv penv val sr' (f_inst fr) wal).
 Proof with eassumption.
   intros ??????????????? HINV Hc0 Hc1 Hv Hmem [Hxinframe [Hloadx Hdesx]] [Hyinframe [Hloady Hdesy]] HgmpBounds Hgmp.
-  have I := HINV. destruct I as [_ [_ [_ [_ [_ [_ [_ [_ [_ [_ [HnoGlobDups [_ [_ [Hmult2 [_ Hi64tempsW]]]]]]]]]]]]]]].
-  assert (Hglob_tmp1: i64_glob glob_tmp1) by now constructor.
-  destruct (Hi64tempsW _ Hglob_tmp1 (VAL_int64 (Int64.repr (to_Z (n1 - n2)%uint63)))) as [sr1 Hsr1].
-  assert (HINV1 : INV fenv sr1 fr). {
-    apply update_global_preserves_INV with (sr:=sr) (i:=glob_tmp1) (m:=m) (num:=(VAL_int64 (Int64.repr (to_Z (n1 - n2 )%uint63))))=> /=//. tauto. }
-  assert (Hsfs1 : s_funcs sr = s_funcs sr1) by now eapply update_global_preserves_funcs; eauto.
-  assert (Hmem1 : smem sr1 (f_inst fr) = Some m)
-      by now apply update_global_preserves_memory in Hsr1.
-  assert (Hgmp1 : sglob_val sr1 (f_inst fr) glob_mem_ptr = Some (VAL_num (VAL_int32 (N_to_i32 gmp)))). {
-    apply update_global_get_other with (j:=glob_tmp1) (sr:=sr) (num:=(VAL_int64 (Int64.repr (to_Z (n1 - n2)%uint63)))); auto. discriminate. }
-  assert (HresVal : sglob_val sr1 (f_inst fr) glob_tmp1 = Some (VAL_num (VAL_int64 (Int64.repr (to_Z (n1 - n2)%uint63)))))
-      by now apply update_global_get_same with (sr:=sr); auto.
-
-  assert (-1 < Z.of_N gmp < Int32.modulus)%Z by lia.
-
-  destruct (Hmult2 _ _ Hmem Hgmp H) as [n Hgmpmult2]; clear H.
-
-  have HcarryRedC0 := make_carry_reduce C0_ord state sr1 fr m _ _ HINV1 Hmem1 Hgmp1 HgmpBounds HresVal.
-  destruct HcarryRedC0 as [sr_C0 [m_C0 [Hmake_carry_red_C0 [HINV_C0 [Hmem_C0 [Hgmp_C0 [HloadRes_C0 [ HloadOrd_C0 [HloadArg_C0 [Hpres64_C0 [Hpres32_C0 [Hsfs_C0 Hmemlength_C0]]]]]]]]]]]].
-
-  assert (HnewgmpBoundsC0: (Z.of_N (gmp + 16) + 8 <= Z.of_N (mem_length m_C0) < Int32.modulus)%Z) by lia.
-
-  assert (HconstrArgsC0: repr_val_constr_args_LambdaANF_Wasm cenv fenv penv [:: Vprim (AstCommon.primInt; (n1 - n2)%uint63)] sr_C0 (f_inst fr) (4 + (gmp+8))%N). {
-    eapply Rcons_l with (wal:=(Val_ptr gmp)) (gmp:=(gmp+16)%N); try lia; eauto.
-    unfold wasm_value_to_i32, wasm_value_to_u32; replace (4 + (gmp + 8))%N with (gmp +12)%N;[auto|lia].
-    eapply Rprim_v with (gmp:=(gmp + 16)%N); try lia; eauto.
-    now constructor. }
-
-  assert (HvalC0: repr_val_LambdaANF_Wasm cenv fenv penv (Vconstr c0_tag [Vprim (AstCommon.primInt ; (n1 - n2)%uint63)]) sr_C0 (f_inst fr) (Val_ptr (gmp + 8)%N)). {
-      eapply Rconstr_boxed_v with (v:=Int32.repr (Z.of_N C0_ord)) (t:=c0_tag) (sr:=sr_C0) (m:=m_C0) (gmp:=(gmp+16)%N) (addr:=(gmp + 8)%N) (arity:=1) (ord:=C0_ord); auto; try lia.
-      - now rewrite /get_ctor_ord Hc0.
-      - now rewrite /get_ctor_arity Hc0.
-      - now exists (n+4)%N. }
-
-  have HcarryRedC1 := make_carry_reduce C1_ord state sr1 fr m _ _ HINV1 Hmem1 Hgmp1 HgmpBounds HresVal.
-  destruct HcarryRedC1 as [sr_C1 [m_C1 [Hmake_carry_red_C1 [HINV_C1 [Hmem_C1 [Hgmp_C1 [HloadRes_C1 [ HloadOrd_C1 [HloadArg_C1 [Hpres64_C1 [Hpres32_C1 [Hsfs_C1 Hmemlength_C1]]]]]]]]]]]].
-
-  assert (HnewgmpBoundsC1: (Z.of_N (gmp + 16) + 8 <= Z.of_N (mem_length m_C1) < Int32.modulus)%Z) by lia.
-
-  assert (HconstrArgsC1: repr_val_constr_args_LambdaANF_Wasm cenv fenv penv [:: Vprim (AstCommon.primInt; (n1 - n2)%uint63)] sr_C1  (f_inst fr) (4 + (gmp+8))%N). {
-    eapply Rcons_l with (wal:=(Val_ptr gmp)) (gmp:=(gmp+16)%N); try lia; eauto.
-    now replace (4 + (gmp + 8))%N with (gmp + 12)%N by lia.
-    eapply Rprim_v with (gmp:=(gmp + 16)%N); eauto; try lia.
-    now constructor. }
-
-  assert (HvalC1: repr_val_LambdaANF_Wasm cenv fenv penv (Vconstr c1_tag [Vprim (AstCommon.primInt ; (n1 - n2)%uint63)]) sr_C1 (f_inst fr) (Val_ptr (gmp + 8)%N)). {
-    eapply Rconstr_boxed_v with (v:=Int32.repr (Z.of_N C1_ord)) (t:=c1_tag) (sr:=sr_C1) (m:=m_C1) (gmp:=(gmp+16)%N) (addr:=(gmp + 8)%N) (arity:=1) (ord:=C1_ord); auto; try lia.
-    - unfold get_ctor_ord. now rewrite Hc1.
-    - unfold get_ctor_arity. now rewrite Hc1.
-    - now exists (n+4)%N. }
+  assert (Hord0 : get_ctor_ord cenv c0_tag = Ret C0_ord) by now unfold get_ctor_ord; rewrite Hc0.
+  assert (Harity0 : get_ctor_arity cenv c0_tag = Ret 1%nat) by now unfold get_ctor_arity; rewrite Hc0.
+  assert (Hord1 : get_ctor_ord cenv c1_tag = Ret C1_ord) by now unfold get_ctor_ord; rewrite Hc1.
+  assert (Harity1 : get_ctor_arity cenv c1_tag = Ret 1%nat) by now unfold get_ctor_arity; rewrite Hc1.
+  destruct (carry_op_setup (n1 - n2)%uint63 state sr fr m gmp c0_tag c1_tag HINV Hord0 Harity0 Hord1 Harity1 Hmem HgmpBounds Hgmp)
+    as [sr1 [sr_C0 [m_C0 [sr_C1 [m_C1 [Hsr1 [Hmem1 [HresVal [HC0 HC1]]]]]]]]].
+  destruct HC0 as [Hmake_carry_red_C0 [HINV_C0 [Hmem_C0 [Hgmp_C0 [Hpres64_C0 [Hpres32_C0 [Hsfs_C0 [Hmemlength_C0 [HnewgmpBoundsC0 HvalC0]]]]]]]]].
+  destruct HC1 as [Hmake_carry_red_C1 [HINV_C1 [Hmem_C1 [Hgmp_C1 [Hpres64_C1 [Hpres32_C1 [Hsfs_C1 [Hmemlength_C1 [HnewgmpBoundsC1 HvalC1]]]]]]]]].
 
   unfold LambdaANF_primInt_carry_fun in Hv.
   destruct (Z_le_dec (to_Z n2) (to_Z n1)) as [Hlt | Hlt].
@@ -854,8 +844,7 @@ Proof with eassumption.
       now apply rt_refl. }
     repeat (split; first congruence).
     intros. eapply val_relation_depends_on_mem_smaller_than_gmp_and_funcs with (sr:=sr) (m:=m) (gmp:=gmp) (gmp':=(gmp + 16)%N);
-      eauto; try lia.
-    now rewrite Hsfs1. }
+      eauto; try lia. }
   { (* There is underflow <-> x < y *)
     rewrite subc_def_spec in Hv. unfold subc_def in Hv.
     replace (n2 <=? n1)%uint63 with false in Hv by now apply to_Z_nle_uint63_leb_false in Hlt.
@@ -889,8 +878,7 @@ Proof with eassumption.
       now apply rt_refl. }
     repeat (split; first congruence).
     intros. eapply val_relation_depends_on_mem_smaller_than_gmp_and_funcs with (sr:=sr) (m:=m) (gmp:=gmp) (gmp':=(gmp + 16)%N);
-      eauto; try lia.
-    now rewrite Hsfs1. }
+      eauto; try lia. }
 Qed.
 
 Lemma subcarryc_reduce (x y : localidx) :
@@ -900,8 +888,11 @@ Lemma subcarryc_reduce (x y : localidx) :
     M.get c1_tag cenv = Some (Build_ctor_ty_info (Common.BasicAst.nNamed "C1"%bs) (Common.BasicAst.nNamed "carry"%bs) it_carry 1%N C1_ord) ->
     LambdaANF_primInt_carry_fun c0_tag c1_tag subcarryc n1 n2 = v ->
     smem sr (f_inst fr) = Some m ->
+    (* Local x holds address to 1st i64 *)
     local_holds_address_to_i64 sr fr x addrx (Int64.repr (to_Z n1)) m bsx ->
+    (* Local y holds address to 2nd i64 *)
     local_holds_address_to_i64 sr fr y addry (Int64.repr (to_Z n2)) m bsy ->
+    (* There is enough free memory available *)
     (Z.of_N gmp + Z.of_N 52 <= Z.of_N (mem_length m) < Int32.modulus)%Z ->
     sglob_val sr (f_inst fr) glob_mem_ptr = Some (VAL_num (VAL_int32 (N_to_i32 gmp))) ->
     exists (sr': store_record) m',
@@ -911,66 +902,25 @@ Lemma subcarryc_reduce (x y : localidx) :
             (state, sr', fr, ($VN (VAL_int32 (N_to_i32 (gmp + 8)%N))) :: instrs))
       /\ INV fenv sr' fr
       /\ smem sr' (f_inst fr) = Some m'
+      (* gmp points to next free segment of memory *)
       /\ sglob_val sr' (f_inst fr) glob_mem_ptr = Some (VAL_num (VAL_int32 (N_to_i32 (gmp + 16))))
       /\ s_funcs sr = s_funcs sr'
       /\ mem_length m = mem_length m'
       /\ repr_val_LambdaANF_Wasm cenv fenv penv v sr' (f_inst fr) (Val_ptr (gmp + 8)%N)
+      (* Values are preserved *)
       /\ (forall (wal : wasm_value) (val : term.val),
              repr_val_LambdaANF_Wasm cenv fenv penv val sr (f_inst fr) wal ->
              repr_val_LambdaANF_Wasm cenv fenv penv val sr' (f_inst fr) wal).
 Proof with eassumption.
   intros ??????????????? HINV Hc0 Hc1 Hv Hmem [Hxinframe  [Hloadx Hdesx]] [Hyinframe [Hloady Hdesy]] HgmpBounds Hgmp.
-  have I := HINV. destruct I as [_ [_ [_ [_ [_ [_ [_ [_ [_ [_ [HnoGlobDups [_ [_ [Hmult2 [_ Hi64tempsW]]]]]]]]]]]]]]].
-  assert (Hglob_tmp1: i64_glob glob_tmp1) by now constructor.
-  destruct (Hi64tempsW _ Hglob_tmp1 (VAL_int64 (Int64.repr (to_Z (n1 - n2 - 1)%uint63)))) as [sr1 Hsr1].
-  assert (HINV1 : INV fenv sr1 fr). {
-    apply update_global_preserves_INV with (sr:=sr) (i:=glob_tmp1) (m:=m) (num:=(VAL_int64 (Int64.repr (to_Z (n1 - n2 - 1)%uint63))))=>/=//. tauto. }
-  assert (Hsfs1 : s_funcs sr = s_funcs sr1)
-      by now eapply update_global_preserves_funcs.
-  assert (Hmem1 : smem sr1 (f_inst fr) = Some m)
-      by now apply update_global_preserves_memory in Hsr1.
-  assert (Hgmp1 : sglob_val sr1 (f_inst fr) glob_mem_ptr = Some (VAL_num (VAL_int32 (N_to_i32 gmp))))
-      by now apply update_global_get_other with (j:=glob_tmp1) (sr:=sr) (num:=(VAL_int64 (Int64.repr (to_Z (n1 - n2 - 1)%uint63)))).
-  assert (HresVal : sglob_val sr1 (f_inst fr) glob_tmp1 = Some (VAL_num (VAL_int64 (Int64.repr (to_Z (n1 - n2 - 1)%uint63)))))
-      by now apply update_global_get_same with (sr:=sr).
-
-  assert (-1 < Z.of_N gmp < Int32.modulus)%Z by lia.
-
-  destruct (Hmult2 _ _ Hmem Hgmp H) as [n Hgmpmult2]; clear H.
-
-  have HcarryRedC0 := make_carry_reduce C0_ord state sr1 fr m _ _ HINV1 Hmem1 Hgmp1 HgmpBounds HresVal.
-  destruct HcarryRedC0 as [sr_C0 [m_C0 [Hmake_carry_red_C0 [HINV_C0 [Hmem_C0 [Hgmp_C0 [HloadRes_C0 [ HloadOrd_C0 [HloadArg_C0 [Hpres64_C0 [Hpres32_C0 [Hsfs_C0 Hmemlength_C0]]]]]]]]]]]].
-
-  assert (HnewgmpBoundsC0: (Z.of_N (gmp + 16) + 8 <= Z.of_N (mem_length m_C0) < Int32.modulus)%Z) by lia.
-
-  assert (HconstrArgsC0: repr_val_constr_args_LambdaANF_Wasm cenv fenv penv [:: Vprim (AstCommon.primInt; (n1 - n2 - 1)%uint63)] sr_C0 (f_inst fr) (4 + (gmp+8))%N). {
-    eapply Rcons_l with (wal:=(Val_ptr gmp)) (gmp:=(gmp+16)%N); try lia; eauto.
-    now replace (4 + (gmp + 8))%N with (gmp +12)%N by lia.
-    eapply Rprim_v with (gmp:=(gmp + 16)%N); try lia; eauto.
-    now constructor. }
-
-  assert (HvalC0: repr_val_LambdaANF_Wasm cenv fenv penv (Vconstr c0_tag [Vprim (AstCommon.primInt ; (n1 - n2 - 1)%uint63)]) sr_C0 (f_inst fr) (Val_ptr (gmp + 8)%N)). {
-    eapply Rconstr_boxed_v with (v:=Int32.repr (Z.of_N C0_ord)) (t:=c0_tag) (sr:=sr_C0) (m:=m_C0) (gmp:=(gmp+16)%N) (addr:=(gmp + 8)%N) (arity:=1) (ord:=C0_ord); auto; try lia.
-    - unfold get_ctor_ord; now rewrite Hc0.
-    - unfold get_ctor_arity; now rewrite Hc0.
-    - now exists (n+4)%N.  }
-
-  have HcarryRedC1 := make_carry_reduce C1_ord state sr1 fr m _ _ HINV1 Hmem1 Hgmp1 HgmpBounds HresVal.
-  destruct HcarryRedC1 as [sr_C1 [m_C1 [Hmake_carry_red_C1 [HINV_C1 [Hmem_C1 [Hgmp_C1 [HloadRes_C1 [ HloadOrd_C1 [HloadArg_C1 [Hpres64_C1 [Hpres32_C1 [Hsfs_C1 Hmemlength_C1]]]]]]]]]]]].
-
-  assert (HnewgmpBoundsC1: (Z.of_N (gmp + 16) + 8 <= Z.of_N (mem_length m_C1) < Int32.modulus)%Z) by lia.
-
-  assert (HconstrArgsC1: repr_val_constr_args_LambdaANF_Wasm cenv fenv penv [:: Vprim (AstCommon.primInt; (n1 - n2 - 1)%uint63)] sr_C1  (f_inst fr) (4 + (gmp+8))%N). {
-    eapply Rcons_l with (wal:=(Val_ptr gmp)) (gmp:=(gmp+16)%N); try lia; eauto.
-    now replace (4 + (gmp + 8))%N with (gmp + 12)%N by lia.
-    eapply Rprim_v with (gmp:=(gmp + 16)%N); try lia; eauto.
-    now constructor. }
-
-  assert (HvalC1: repr_val_LambdaANF_Wasm cenv fenv penv (Vconstr c1_tag [Vprim (AstCommon.primInt ; (n1 - n2 - 1)%uint63)]) sr_C1 (f_inst fr) (Val_ptr (gmp + 8)%N)). {
-    eapply Rconstr_boxed_v with (v:=Int32.repr (Z.of_N C1_ord)) (t:=c1_tag) (sr:=sr_C1) (m:=m_C1) (gmp:=(gmp+16)%N) (addr:=(gmp + 8)%N) (arity:=1) (ord:=C1_ord); auto; try lia.
-    - unfold get_ctor_ord; now rewrite Hc1.
-    - unfold get_ctor_arity; now rewrite Hc1.
-    - now exists (n+4)%N.  }
+  assert (Hord0 : get_ctor_ord cenv c0_tag = Ret C0_ord) by now unfold get_ctor_ord; rewrite Hc0.
+  assert (Harity0 : get_ctor_arity cenv c0_tag = Ret 1%nat) by now unfold get_ctor_arity; rewrite Hc0.
+  assert (Hord1 : get_ctor_ord cenv c1_tag = Ret C1_ord) by now unfold get_ctor_ord; rewrite Hc1.
+  assert (Harity1 : get_ctor_arity cenv c1_tag = Ret 1%nat) by now unfold get_ctor_arity; rewrite Hc1.
+  destruct (carry_op_setup (n1 - n2 - 1)%uint63 state sr fr m gmp c0_tag c1_tag HINV Hord0 Harity0 Hord1 Harity1 Hmem HgmpBounds Hgmp)
+    as [sr1 [sr_C0 [m_C0 [sr_C1 [m_C1 [Hsr1 [Hmem1 [HresVal [HC0 HC1]]]]]]]]].
+  destruct HC0 as [Hmake_carry_red_C0 [HINV_C0 [Hmem_C0 [Hgmp_C0 [Hpres64_C0 [Hpres32_C0 [Hsfs_C0 [Hmemlength_C0 [HnewgmpBoundsC0 HvalC0]]]]]]]]].
+  destruct HC1 as [Hmake_carry_red_C1 [HINV_C1 [Hmem_C1 [Hgmp_C1 [Hpres64_C1 [Hpres32_C1 [Hsfs_C1 [Hmemlength_C1 [HnewgmpBoundsC1 HvalC1]]]]]]]]].
 
   unfold LambdaANF_primInt_carry_fun in Hv.
   destruct (Z_lt_dec (to_Z n2) (to_Z n1)) as [Hlt | Hlt].
@@ -1008,8 +958,7 @@ Proof with eassumption.
       now apply rt_refl. }
     repeat (split; first congruence).
     intros. eapply val_relation_depends_on_mem_smaller_than_gmp_and_funcs with (sr:=sr) (m:=m) (gmp:=gmp) (gmp':=(gmp + 16)%N);
-     eauto; try lia.
-     now rewrite Hsfs1. }
+     eauto; try lia. }
   { (* There is underflow <-> x <= y *)
     rewrite subcarryc_def_spec in Hv. unfold subcarryc_def, subcarry in Hv.
     replace (n2 <? n1)%uint63 with false in Hv by lia.
@@ -1045,8 +994,7 @@ Proof with eassumption.
     repeat (split; first congruence).
     intros.
     eapply val_relation_depends_on_mem_smaller_than_gmp_and_funcs with (sr:=sr) (m:=m) (gmp:=gmp) (gmp':=(gmp + 16)%N);
-      eauto; try lia.
-    now rewrite Hsfs1. }
+      eauto; try lia. }
 Qed.
 
 Lemma make_product_reduce (gidx1 gidx2 : globalidx) :
