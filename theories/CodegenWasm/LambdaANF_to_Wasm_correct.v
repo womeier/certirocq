@@ -3114,8 +3114,8 @@ Lemma step_preserves_empty_env_fds : forall rho e v c fds rho' fds' f'  (pfs : M
 	  rho ! x = Some v0 ->
 	  subval_or_eq (Vfun rho' fds' f') v0 ->
 	  fds' = fds /\ rho' = M.empty val /\ name_in_fundefs fds f') ->
-	(forall e' e'' eAny fdsAny,
-	  (subterm_or_eq e' e \/ (subterm_or_eq e' e'' /\ dsubterm_fds_e e'' fds))
+	(forall e' eAny fdsAny,
+	  (subterm_or_eq e' e \/ (exists e'', subterm_or_eq e' e'' /\ dsubterm_fds_e e'' fds))
 	  -> e' <> Efun fdsAny eAny) ->
         prim_funs_env_returns_no_funvalues pfs ->
   bstep_e pfs cenv rho e v c ->
@@ -3136,7 +3136,7 @@ Proof.
       * (* x <> x0 *)
         rewrite M.gso in H0; auto.
         have H' := Hrho _ _ _ _ _ H0 H1. by assumption.
-    + intros ? ? ? ? [H' | H']; last now eapply HnoFd.
+    + intros ? ? ? [H' | H']; last (eapply HnoFd; right; exact H').
       eapply HnoFd. left. eapply rt_trans; try eassumption.
       apply rt_step. by constructor.
   - (* Eproj *)
@@ -3149,12 +3149,12 @@ Proof.
         by eauto.
       * (* x <> x0*)
         by rewrite M.gso in H1; eauto.
-    + intros ? ? ? ? [H' | H']. 2: now eapply HnoFd.
+    + intros ? ? ? [H' | H']. 2: (eapply HnoFd; right; exact H').
       eapply HnoFd. left. eapply rt_trans; try eassumption.
       apply rt_step. by constructor.
   - (* Ecase *)
     eapply IHHstep; try eassumption.
-    intros ? ? ? ? [H' | H']. 2: now eapply HnoFd.
+    intros ? ? ? [H' | H']. 2: (eapply HnoFd; right; exact H').
     eapply HnoFd. left. eapply rt_trans; try eassumption.
     apply rt_step. econstructor. now apply findtag_In_patterns.
   - (* Eapp *)
@@ -3184,8 +3184,8 @@ Proof.
         now inv Heq.
         apply def_funs_spec in H'. destruct H' as [[? ?] | [? ?]]; auto.
         destruct H5. now subst.
-    + intros ? ? ? ? [H' | H']. 2: now eapply HnoFd.
-      eapply HnoFd. right. split. eassumption.
+    + intros ? ? ? [H' | H']. 2: (eapply HnoFd; right; exact H').
+      eapply HnoFd. right. eexists. split. eassumption.
       now eapply find_def_dsubterm_fds_e.
   - (* Eletapp *)
     eapply IHHstep2; try eassumption.
@@ -3219,10 +3219,10 @@ Proof.
            now inv Heq.
            apply def_funs_spec in H'. destruct H' as [[? ?] | [? Hcontra]].
            assumption. destruct H6. now subst.
-      * intros ???? [H' | H']; last now eapply HnoFd.
-        eapply HnoFd. right. split. eassumption.
+      * intros ??? [H' | H']; last (eapply HnoFd; right; exact H').
+        eapply HnoFd. right. eexists. split. eassumption.
         now eapply find_def_dsubterm_fds_e.
-    + intros ? ? ? ? [H' | H']. 2: now eapply HnoFd.
+    + intros ? ? ? [H' | H']. 2: (eapply HnoFd; right; exact H').
       eapply HnoFd. left. eapply rt_trans. eassumption.
       apply rt_step. by constructor.
   - (* Efun: absurd *)
@@ -3233,7 +3233,7 @@ Proof.
         subst x0. rewrite M.gss in H. inv H.
         now apply subval_or_eq_fun_not_prim in H0.
       * (* x <> x0 *) rewrite M.gso in H; auto. by eauto.
-    + intros ? ? ? ? [H' | H']. 2: now eapply HnoFd.
+    + intros ? ? ? [H' | H']. 2: (eapply HnoFd; right; exact H').
       eapply HnoFd. left. eapply rt_trans; try eassumption.
       apply rt_step. by constructor.
   - (* Eprim *)
@@ -3244,11 +3244,10 @@ Proof.
       inversion H2. subst v0.
       have H' := Hpfs _ _ _ _ _ _ _ H0 H1.
       specialize (H' rho' fds'0 f'1). contradiction.
-    + intros ? ? ? ? [H' | H']. 2: now eapply HnoFd.
+    + intros ? ? ? [H' | H']. 2: (eapply HnoFd; right; exact H').
       eapply HnoFd. left. eapply rt_trans; try eassumption.
       apply rt_step. by constructor.
   - (* Ehalt *) by eauto.
-  Unshelve. all: assumption.
 Qed.
 
 Lemma repr_expr_LambdaANF_Wasm_no_Efun_subterm {lenv} : forall e_body eAny mem,
@@ -3699,7 +3698,7 @@ Definition fds_restricted fds := forall a t ys e,
   find_def a fds = Some (t, ys, e) ->
   expression_restricted cenv e /\
   (forall x, occurs_free e x -> In x ys \/ find_def x fds <> None) /\
-  NoDup (ys ++ collect_local_variables e ++ collect_function_vars (Efun fds e)).
+  NoDup (ys ++ collect_local_variables e ++ collect_function_vars_fds fds).
 
 (* This is assumed here, the proof was moved to LambdaANF_to_Wasm_primints_correct.v *)
 Definition primitive_operation_reduces pfs : Prop :=
@@ -3740,7 +3739,7 @@ Definition primitive_operation_reduces pfs : Prop :=
    per-constructor lemmas and the induction hypotheses all share this statement. *)
 Definition bs_wasm_related (fds : fundefs) (rho : eval.env) (e : exp) (v : term.val) : Prop :=
   (* bound vars globally unique *)
-  NoDup ((collect_local_variables e) ++ (collect_function_vars (Efun fds e))%list) ->
+  NoDup ((collect_local_variables e) ++ (collect_function_vars_fds fds)%list) ->
 
   (* find_def a fds <> None, rho ! a imply fn value *)
   (forall (a : positive) (v : term.val), rho ! a = Some v -> find_def a fds <> None ->
@@ -3995,7 +3994,7 @@ Proof with eauto.
     }
 
     assert (Hnodup': NoDup (collect_local_variables e ++
-                            collect_function_vars (Efun fds e))). {
+                            collect_function_vars_fds fds)). {
      cbn in Hnodup. apply NoDup_cons_iff in Hnodup.
      now destruct Hnodup. }
 
@@ -4065,7 +4064,7 @@ Proof with eauto.
 
     subst. injection H as <-.
     remember ({|f_locs := set_nth (VAL_num (nat_to_value (N.to_nat (2 * ord + 1)))) (f_locs fr) (N.to_nat x') (VAL_num (nat_to_value (N.to_nat (2 * ord + 1)))) ; f_inst := f_inst fr|}) as f_before_IH.
-    assert (HNoDup' : NoDup (collect_local_variables e ++ collect_function_vars (Efun fds e))). {
+    assert (HNoDup' : NoDup (collect_local_variables e ++ collect_function_vars_fds fds)). {
       cbn in Hnodup. apply NoDup_cons_iff in Hnodup.
       destruct Hnodup. assumption.
     }
@@ -4200,7 +4199,6 @@ Proof with eauto.
     subst f_before_IH.
     by repeat (split; auto).
   }
-  Unshelve. all: assumption.
 Qed.
 
 Lemma bs_wasm_related_Eproj : forall pfs fds,
@@ -4338,7 +4336,7 @@ Proof with eauto.
   }
 
   assert (Hnodup' : NoDup (collect_local_variables e ++
-                           collect_function_vars (Efun fds e))). {
+                           collect_function_vars_fds fds)). {
     cbn in Hnodup. apply NoDup_cons_iff in Hnodup.
     now destruct Hnodup. }
 
@@ -4386,7 +4384,6 @@ Proof with eauto.
     apply /ssrnat.leP. now apply HlocInBound in Hx'.
     apply rt_refl. apply Hred. }
   subst f_before_IH. by repeat (split; auto).
-  Unshelve. all: assumption.
 Qed.
 
 Lemma bs_wasm_related_Ecase : forall pfs fds,
@@ -4568,7 +4565,7 @@ Proof with eauto.
   destruct Hstep_case as [e' [k0 [lh0 [Hred Hrepre]]]].
 
   assert (Hnodup': NoDup (collect_local_variables e ++
-                            collect_function_vars (Efun fds e))). {
+                            collect_function_vars_fds fds)). {
     apply NoDup_incl_NoDup' with (l1:=collect_local_variables (Ecase y cl)) =>//.
     apply NoDup_case with (cl:=cl) (t:=t) (y:=y)=>//.
     apply NoDup_app_remove_r in Hnodup. assumption.
@@ -4589,7 +4586,6 @@ Proof with eauto.
   split. apply Hfinst.
   split. apply HvalPres.
   apply H_INV.
-  Unshelve. all: assumption.
 Qed.
 
 Lemma bs_wasm_related_Eapp : forall pfs fds,
@@ -4800,7 +4796,7 @@ Proof with eauto.
   }
 
   assert (Hnodup': NoDup (collect_local_variables e ++
-                          collect_function_vars (Efun fds e))). {
+                          collect_function_vars_fds fds)). {
     apply HfdsRestr in H7. destruct H7 as [_ [_ HnodupE]].
     apply NoDup_app_remove_l in HnodupE.
     assumption. }
@@ -4872,7 +4868,6 @@ Proof with eauto.
 
   subst f_before_IH. cbn in Hfinst.
   repeat (split; auto).
-  Unshelve. all: assumption.
 Qed.
 
 Lemma bs_wasm_related_Eletapp : forall pfs fds,
@@ -5089,7 +5084,7 @@ Proof with eauto.
   }
 
   assert (Hnodup': NoDup (collect_local_variables e_body ++
-                          collect_function_vars (Efun fds e_body))). {
+                          collect_function_vars_fds fds)). {
     apply HfdsRestr in H7. destruct H7 as [_ [_ HnodupE]].
     apply NoDup_app_remove_l in HnodupE.
     assumption. }
@@ -5141,7 +5136,7 @@ Proof with eauto.
 
       (* prepare IH for continuation *)
       assert (Hnodup': NoDup (collect_local_variables e_cont ++
-                              collect_function_vars (Efun fds e_cont))). {
+                              collect_function_vars_fds fds)). {
         cbn in Hnodup. now inv Hnodup.
       }
 
@@ -5230,9 +5225,9 @@ Proof with eauto.
                 assumption. now destruct Hcontra.
             }
             {
-              intros ? ? ? ? [HbodyNofun | HfdsNofun].
+              intros ? ? ? [HbodyNofun | HfdsNofun].
             - eapply repr_expr_LambdaANF_Wasm_no_Efun_subterm; eauto.
-            - destruct HfdsNofun as [Hsub HsubFds].
+            - destruct HfdsNofun as [e'' [Hsub HsubFds]].
               eapply dsubterm_fds_e_find_def in HsubFds.
               2:{ now apply NoDup_app_remove_l in Hnodup. }
               destruct HsubFds as [? [? [? Hfd]]].
@@ -5399,7 +5394,6 @@ Proof with eauto.
   rewrite Hfinst' in Hval_final.
   rewrite Hfinst'.
   by repeat (split; auto).
-  Unshelve. all: assumption.
 Qed.
 
 Lemma bs_wasm_related_Efun : forall pfs fds,
@@ -5415,7 +5409,6 @@ Proof with eauto.
   intros k fAny mem lh lenv HlenvInjective HenvsDisjoint state sr fr instructions
          Hfds HlocInBound Hinv HmemAvail Hrepr_e HrelE.
   inv Hrepr_e. (* absurd, fn defs only on topmost level *)
-  Unshelve. all: assumption.
 Qed.
 
 Lemma bs_wasm_related_Eprim_val : forall pfs fds,
@@ -5561,7 +5554,7 @@ Proof with eauto.
       apply HlocInBound in Hvar, H3. lia.
     }
 
-    assert (Hnodup' : NoDup (collect_local_variables e ++ collect_function_vars (Efun fds e)) ). {
+    assert (Hnodup' : NoDup (collect_local_variables e ++ collect_function_vars_fds fds) ). {
       cbn in Hnodup. apply NoDup_cons_iff in Hnodup. now destruct Hnodup.
     }
 
@@ -5759,7 +5752,6 @@ Proof with eauto.
     split. right. assumption. split. reflexivity. split. congruence.
     split. auto.
     intro Hcontra. rewrite Hcontra in HoutofM. inv HoutofM. }
-  Unshelve. all: assumption.
 Qed.
 
 Lemma bs_wasm_related_Eprim : forall pfs fds,
@@ -5841,7 +5833,7 @@ Proof with eauto.
     rewrite Hfinst in HenoughM'.
     have Hrepr_e' := H8.
 
-    assert (Hnodup' : NoDup (collect_local_variables e ++ collect_function_vars (Efun fds e))). {
+    assert (Hnodup' : NoDup (collect_local_variables e ++ collect_function_vars_fds fds)). {
       cbn in Hnodup. apply NoDup_cons_iff in Hnodup. now destruct Hnodup.
     }
 
@@ -5944,7 +5936,6 @@ Proof with eauto.
     split.
     now apply HvalPreserved.
     intro Hcontra. rewrite Hcontra in HoutofM. inv HoutofM. }
-  Unshelve. all: assumption.
 Qed.
 
 Lemma bs_wasm_related_Ehalt : forall pfs fds,
@@ -6016,7 +6007,6 @@ Proof with eauto.
   intro H_INV.
   eapply update_global_preserves_INV with (i:=glob_result) (num:=(VAL_int32 (wasm_value_to_i32 wal))); eauto=>//.
   cbn; tauto.
-  Unshelve. all: assumption.
 Qed.
 
 (* GENERALIZED CORRECTNESS THEOREM *)

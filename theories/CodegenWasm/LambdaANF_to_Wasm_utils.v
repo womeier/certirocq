@@ -363,11 +363,11 @@ Qed.
 Lemma NoDup_collect_all_local_variables_find_def : forall fds e f t ys e0,
  NoDup
    (collect_all_local_variables (Efun fds e) ++
-    collect_function_vars (Efun fds e))%list ->
+    collect_function_vars_fds fds)%list ->
   find_def f fds = Some (t, ys, e0) ->
  NoDup
   ((ys ++ collect_local_variables e0) ++
-   collect_function_vars (Efun fds e0)).
+   collect_function_vars_fds fds).
 Proof.
   intros.
   assert (Hnodup: NoDup (ys ++ collect_local_variables e0)). {
@@ -379,17 +379,7 @@ Proof.
       eapply IHfds with (e:=e1); eauto. cbn in H. cbn.
       rewrite <- catA. repeat rewrite <- catA in H. apply NoDup_app_remove_middle in H.
       apply NoDup_app_remove_middle in H. rewrite catA in H.
-      replace (v
-       :: (fix iter (fds : fundefs) : seq var :=
-             match fds with
-             | Fcons x _ _ _ fds' => x :: iter fds'
-             | Fnil => [::]
-             end) fds) with ([v] ++
-       (fix iter (fds : fundefs) : seq var :=
-             match fds with
-             | Fcons x _ _ _ fds' => x :: iter fds'
-             | Fnil => [::]
-             end) fds) in H by reflexivity.
+      rewrite -cat1s in H.
       apply NoDup_app_remove_middle in H. rewrite <- catA in H. assumption.
     }}
   have Hincl := find_def_collect_all_local_variables _ _ _ _ _ e H0.
@@ -415,9 +405,9 @@ Proof.
     inv H. now destruct (M.elt_eq c t).
 Qed.
 
-Lemma find_def_in_collect_function_vars : forall fds f e,
+Lemma find_def_in_collect_function_vars : forall fds f,
   find_def f fds <> None <->
-  In f (collect_function_vars (Efun fds e)).
+  In f (collect_function_vars_fds fds).
 Proof.
   induction fds; intros; split.
   - intro H. cbn in H.
@@ -431,21 +421,24 @@ Proof.
                eapply IHfds. eassumption. assumption.
   - intro H. contradiction.
   - intro H. inv H.
-  Unshelve. all: auto.
 Qed.
 
-Lemma find_def_not_in_collect_function_vars : forall fds f e,
+Lemma find_def_not_in_collect_function_vars : forall fds f,
   find_def f fds = None ->
-  ~ In f (collect_function_vars (Efun fds e)).
+  ~ In f (collect_function_vars_fds fds).
 Proof.
-  intros ? ? ? Hfd Hcontra.
+  intros ? ? Hfd Hcontra.
   by apply find_def_in_collect_function_vars in Hcontra.
 Qed.
 
-Lemma collect_function_vars_length : forall fds e,
-  length (collect_function_vars (Efun fds e)) = numOf_fundefs fds.
+Lemma collect_function_vars_Efun : forall fds e,
+  collect_function_vars (Efun fds e) = collect_function_vars_fds fds.
+Proof. reflexivity. Qed.
+
+Lemma collect_function_vars_length : forall fds,
+  length (collect_function_vars_fds fds) = numOf_fundefs fds.
 Proof.
-  induction fds; intros; auto. cbn. f_equal. now eapply IHfds with (e:=e).
+  induction fds; auto. cbn. f_equal. now apply IHfds.
 Qed.
 
 (* Var maps: var -> local idx / fn idx *)
@@ -753,8 +746,8 @@ Proof.
 Qed.
 
 
-Lemma dsubterm_fds_e_find_def : forall (fds : fundefs) (e : exp) (eAny : exp),
-  NoDup (collect_function_vars (Efun fds eAny)) ->
+Lemma dsubterm_fds_e_find_def : forall (fds : fundefs) (e : exp),
+  NoDup (collect_function_vars_fds fds) ->
   dsubterm_fds_e e fds ->
   exists f ys t, find_def f fds = Some (t, ys, e).
 Proof.
@@ -767,7 +760,6 @@ Proof.
     now inv H. } exists f'.
   cbn. now destruct (M.elt_eq f' v).
   now inv H.
-  Unshelve. all: assumption.
 Qed.
 
 Lemma set_lists_In : forall {A} x xs (v:A) vs rho rho' ,
@@ -1065,19 +1057,11 @@ Definition load_i32 m addr : option value_num :=
   | Some bs => Some (wasm_deserialise bs T_i32)
   end.
 
-Definition store_i32 mem addr (v : value_num) : option meminst :=
-  store mem addr 0%N (serialise_num v) 4.
-
-
 Definition load_i64 m addr : option value_num :=
   match load m addr 0%N 8 with (* offset: 0, 4 bytes *)
   | None => None
   | Some bs => Some (wasm_deserialise bs T_i64)
   end.
-
-Definition store_i64 mem addr (v : value_num) : option meminst :=
-    store mem addr 0%N (serialise_num v) 8.
-
 
 Definition tag_to_i32 (t : ctor_tag) :=
   Wasm_int.Int32.repr (BinInt.Z.of_nat (Pos.to_nat t)).

@@ -492,14 +492,16 @@ Definition unique_export_names (fns : list wasm_function) :=
 
 (* ***** MAIN: GENERATE COMPLETE WASM_MODULE FROM lambdaANF EXP ****** *)
 
+Fixpoint collect_function_vars_fds (fds : fundefs) : list term.var :=
+  match fds with
+  | Fnil => []
+  | Fcons x _ _ _ fds' => x :: collect_function_vars_fds fds'
+  end.
+
 Definition collect_function_vars (e : term.exp) : list term.var :=
     match e with
-    | Efun fds exp => (* fundefs only allowed here (uppermost level) *)
-      (fix iter (fds : fundefs) : list term.var :=
-          match fds with
-          | Fnil => []
-          | Fcons x _ _ e' fds' => x :: (iter fds')
-          end) fds
+    | Efun fds _ => (* fundefs only allowed here (uppermost level) *)
+      collect_function_vars_fds fds
     | _ => []
     end.
 

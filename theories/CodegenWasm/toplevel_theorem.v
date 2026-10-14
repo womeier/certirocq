@@ -85,7 +85,7 @@ Proof.
     inv HeRestr. assumption.
   }
 
-  assert (Hnodup': NoDup (collect_function_vars (Efun fds e))). {
+  assert (Hnodup': NoDup (collect_function_vars_fds fds)). {
     now eapply NoDup_app_remove_l in HvarsNodup.
   }
 
@@ -152,7 +152,7 @@ Proof.
   }
 
   assert (Hnodup'': NoDup (collect_local_variables e ++
-                          collect_function_vars (Efun fds e))). {
+                          collect_function_vars_fds fds)). {
     cbn in HvarsNodup. rewrite <-catA in HvarsNodup.
     now eapply NoDup_app_remove_middle in HvarsNodup.
   }
@@ -169,6 +169,7 @@ Proof.
       + now eapply NoDup_app_remove_l in HvarsNodup.
       + assumption.
     - destruct H as [i H]. apply variable_mapping_Some_In in H; auto.
+      rewrite collect_function_vars_Efun in H.
       rewrite <- find_def_in_collect_function_vars in H.
       now apply notNone_Some.
   }
@@ -202,7 +203,7 @@ Proof.
     intros. eapply def_funs_not_find_def; eauto.
     destruct (find_def x fds) eqn:Hdec; auto. exfalso.
     assert (Hdec': find_def x fds <> None) by congruence. clear Hdec p.
-    apply find_def_in_collect_function_vars with (e:=e) in Hdec'.
+    apply find_def_in_collect_function_vars in Hdec'.
     cbn in HvarsNodup. rewrite <- catA in HvarsNodup.
     eapply NoDup_app_remove_middle in HvarsNodup; eauto.
     by eapply NoDup_app_In in H; eauto.
