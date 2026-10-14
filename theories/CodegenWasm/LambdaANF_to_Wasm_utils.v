@@ -1109,28 +1109,30 @@ Proof.
   - rewrite IHlen; last lia. f_equal. lia.
 Qed.
 
-Lemma write_bytes_read_bytes : forall mt md addr bs m0,
-  write_bytes md addr bs = Some m0 ->
-  read_bytes {| meminst_type := mt; meminst_data := m0 |} addr (length bs) = Some bs.
+Lemma bytes_takefill_id : forall n bs, length bs = n -> bytes_takefill #00 n bs = bs.
 Proof.
-  intros mt md addr bs m0 Hw.
+  intros n bs Hlen. unfold bytes_takefill.
+  rewrite Hlen Nat.ltb_irrefl -Hlen. apply List.firstn_all.
+Qed.
+
+Lemma write_bytes_read_bytes : forall mt md addr v len m0,
+  length v = len ->
+  write_bytes md addr (bytes_takefill #00 len v) = Some m0 ->
+  read_bytes {| meminst_type := mt; meminst_data := m0 |} addr len = Some v.
+Proof.
+  intros mt md addr v len m0 Hlen Hw.
+  rewrite (bytes_takefill_id _ _ Hlen) in Hw. rewrite -Hlen.
   unfold read_bytes. cbn.
   apply those_spec.
-  { rewrite length_map. apply (size_iota 0 (length bs)). }
+  { rewrite length_map. apply (size_iota 0 (length v)). }
   intros n x Hnth.
-  assert (Nat.lt n (length bs)) as Hlt by (apply nth_error_Some; congruence).
+  assert (Nat.lt n (length v)) as Hlt by (apply nth_error_Some; congruence).
   erewrite map_nth_error; last first.
   { apply nth_error_iota. exact Hlt. }
   cbn. do 2 f_equal.
   unfold write_bytes, write_bytes_gen in Hw.
   erewrite mem_update_gen_lookup; [ | exact Hw | lia ].
   unfold lookup_N. rewrite Nnat.Nat2N.id. by rewrite Hnth.
-Qed.
-
-Lemma bytes_takefill_id : forall n bs, length bs = n -> bytes_takefill #00 n bs = bs.
-Proof.
-  intros n bs Hlen. unfold bytes_takefill.
-  rewrite Hlen Nat.ltb_irrefl -Hlen. apply List.firstn_all.
 Qed.
 
 Lemma in_iota_lt : forall len m n,
@@ -1157,19 +1159,6 @@ Proof.
   lia.
 Qed.
 
-Lemma write_bytes_read_bytes_i32 : forall m addr v m0,
-  length v = 4 ->
-  write_bytes (meminst_data m) addr (bytes_takefill #00 4 v) = Some m0 ->
-  read_bytes {| meminst_type := meminst_type m; meminst_data := m0 |} addr 4 = Some v.
-Proof.
-  intros m addr v m0 Hlen Hw.
-  rewrite (bytes_takefill_id _ _ Hlen) in Hw.
-  have Hres : read_bytes {| meminst_type := meminst_type m; meminst_data := m0 |}
-                addr (length v) = Some v
-    by apply: write_bytes_read_bytes; exact Hw.
-  by rewrite Hlen in Hres.
-Qed.
-
 Lemma store_load_i32 : forall m m' addr v,
   length v = 4 ->
   store m addr 0%N v 4 = Some m' ->
@@ -1182,21 +1171,7 @@ Proof.
   have Hlen' := (write_bytes_gen_preserve_length Hby). unfold mem_length in *. cbn.
   destruct (addr + 4 <=? memory.mem_length m0)%N eqn:Hlen''; try lia.
   cbn.
-  now erewrite write_bytes_read_bytes_i32.
-Qed.
-
-
-Lemma write_bytes_read_bytes_i64 : forall m addr v m0,
-  length v = 8 ->
-  write_bytes (meminst_data m) addr (bytes_takefill #00 8 v) = Some m0 ->
-  read_bytes {| meminst_type := meminst_type m; meminst_data := m0 |} addr 8 = Some v.
-Proof.
-  intros m addr v m0 Hlen Hw.
-  rewrite (bytes_takefill_id _ _ Hlen) in Hw.
-  have Hres : read_bytes {| meminst_type := meminst_type m; meminst_data := m0 |}
-                addr (length v) = Some v
-    by apply: write_bytes_read_bytes; exact Hw.
-  by rewrite Hlen in Hres.
+  now erewrite write_bytes_read_bytes.
 Qed.
 
 Lemma store_load_i64 : forall m m' addr v,
@@ -1210,7 +1185,7 @@ Proof.
   unfold load. cbn.
   have Hlen' := (write_bytes_gen_preserve_length Hby). unfold mem_length in *. cbn.
   destruct (addr + 8 <=? memory.mem_length m0)%N eqn:Hlen''; try lia.
-  now erewrite write_bytes_read_bytes_i64.
+  now erewrite write_bytes_read_bytes.
 Qed.
 
 Lemma enough_space_to_load m k :
