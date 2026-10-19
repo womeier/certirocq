@@ -31,13 +31,16 @@ Definition max_mem_pages := 30000%N.
 (* ***** FUNCTIONS and GLOBALS ****** *)
 
 (* In Wasm, functions and globals are referred to by their index in the order they are listed.
-   Function 0 is main, then follow the translated lANF functions.  *)
+   Imported functions come first (they realize primitive operations, see below),
+   then main, then the translated lANF functions. *)
 
 (* main function: contains the translated main expression *)
 Definition main_function_name := "main_function".
-Definition main_function_idx : funcidx := 0%N.
+Definition main_function_idx (num_imports : nat) : funcidx := N.of_nat num_imports.
 
-(* Index of the first translated lANF function. *)
+(* Number of functions defined by this module that don't stem from an lANF function
+   definition (only main). The first translated lANF function has index
+   num_imports + num_custom_funs. *)
 Definition num_custom_funs := 1.
 
 (* global vars *)
@@ -240,6 +243,89 @@ Definition translate_primitive_value (p : AstCommon.primitive_value) : error Was
   end (projT2 p).
 
 
+(* **** PRIMITIVE OPERATIONS REALIZED BY THE HOST (WASM IMPORTS) **** *)
+
+(* Primitive operations that this backend doesn't inline (i.e. that are not in
+   [primop_map]) are realized by host functions, which are imported from the
+   module [prim_import_module_name]. The name of an import is the target name
+   given when the primitive was registered, e.g.
+
+     CertiRocq Register [ sha256 => "sha256" ] Include [ ].
+
+   The imports follow the same calling convention as the translated lANF
+   functions: they take their arguments as i32 (pointers into the linear memory,
+   or unboxed values), and write their result to glob_result. Hence the type
+   index of an import is its arity, see [list_function_types]; primitives with
+   more arguments than [max_function_args] are not imported (using one is then
+   rejected by translate_primitive_operation). A host function
+   that allocates has to do so at glob_mem_ptr and bump glob_mem_ptr past its
+   allocation, it may grow the memory, and it signals failure by setting
+   glob_out_of_mem (which the call site checks, just like for a call to a
+   translated function). The globals and the memory are exported under the names
+   "mem_ptr", "result", "out_of_mem" and "memory", so a host module can be
+   linked against them. (The prim_alloc flag of a registered primitive is
+   irrelevant here: unlike the C backend, there is no tinfo argument, the
+   allocation state is in the globals.)
+
+   Int63 operations are never imported: they are meant to be inlined, and their
+   values are boxed in the linear memory, a representation that shouldn't be
+   exposed to the host. *)
+
+Definition prim_import_module_name := "env".
+
+Definition is_primInt63_op (kn : Kernames.kername) : bool :=
+  match Kernames.modpath_eq_dec (fst kn) primInt63ModPath with
+  | left _ => true
+  | right _ => false
+  end.
+
+Definition prim_is_imported (pr : primitive) : bool :=
+  match KernameMap.find pr.(prim_name) primop_map with
+  | Some _ => false (* inlined, see translate_primitive_operation *)
+  | None => negb (is_primInt63_op pr.(prim_name))
+            (* the type of an import has to be in mod_types, see [list_function_types] *)
+            && Nat.leb pr.(prim_arity) (Z.to_nat max_function_args)
+  end.
+
+(* The primitives realized by host functions, in the order in which they are
+   imported, which is also the order of their function indices (in Wasm, imported
+   functions come first). M.elements is sorted, so this only depends on penv. *)
+Definition prim_imports (penv : prim_env) : list (positive * primitive) :=
+  List.filter (fun (p : positive * primitive) => prim_is_imported (snd p)) (M.elements penv).
+
+Definition num_prim_imports (penv : prim_env) : nat :=
+  length (prim_imports penv).
+
+Fixpoint prim_import_idx_from (p : positive) (l : list (positive * primitive)) (idx : funcidx)
+  : option funcidx :=
+  match l with
+  | [] => None
+  | (p', _) :: l' => if Pos.eqb p p' then Some idx
+                     else prim_import_idx_from p l' (N.succ idx)
+  end.
+
+(* function index of the host function realizing the primitive p *)
+Definition prim_import_idx (penv : prim_env) (p : positive) : option funcidx :=
+  prim_import_idx_from p (prim_imports penv) 0%N.
+
+Lemma prim_imports_In : forall penv p pr,
+  M.get p penv = Some pr ->
+  prim_is_imported pr = true ->
+  In (p, pr) (prim_imports penv).
+Proof.
+  intros penv p pr Hp Himp. unfold prim_imports.
+  apply List.filter_In. split.
+  - now apply M.elements_correct.
+  - exact Himp.
+Qed.
+
+Definition prim_import_declaration (pr : primitive) : module_import :=
+  {| imp_module := String.print prim_import_module_name
+   ; imp_name   := String.print pr.(prim_target)
+   ; imp_desc   := MID_func (N.of_nat pr.(prim_arity)) (* type: i32^arity -> [] *)
+   |}.
+
+
 (* **** TRANSLATE PRIMITIVE OPERATIONS **** *)
 
 (* actual translation in [LambdaANF_to_Wasm_primints.v] file *)
@@ -409,12 +495,33 @@ Fixpoint translate_body (nenv : name_env) (cenv : ctor_env) (lenv: localvar_env)
        | None => Err "Primitive operation not found in prim_env"
        | Some p' =>
            x_var <- translate_var nenv lenv x "translate_exp prim op" ;;
-           prim_op_instrs <- translate_primitive_operation nenv lenv p' ys ;;
-           let p := call_grow_mem_if_necessary mem 52%N in (* 28 bytes plus 24 for some luft for invariants *)
-           let grow_instr := fst p in
-           let mem' := snd p in
-           following_instr <- translate_body nenv cenv lenv fenv penv e' mem' ;;
-           Ret (grow_instr ++ prim_op_instrs ++ [ BI_local_set x_var ]  ++ following_instr)
+           if prim_is_imported p' then
+             (* realized by a host function: call the corresponding import *)
+             match prim_import_idx penv p with
+             | None => Err "Primitive operation not found in imports"
+             | Some fidx =>
+                 _ <- assert (Nat.eqb (length ys) p'.(prim_arity))
+                        ("primitive " ++ p'.(prim_target) ++ " applied to the wrong number of arguments")%bs ;;
+                 instr_pass_params <- pass_function_args nenv lenv fenv ys ;;
+                 (* the host may have allocated, so no static guarantees for available memory *)
+                 following_instr <- translate_body nenv cenv lenv fenv penv e' 0%N ;;
+                 Ret (instr_pass_params ++
+                      [ BI_call fidx
+                      ; BI_global_get glob_out_of_mem
+                      ; BI_if (BT_valtype None)
+                          [ BI_return ]
+                          []
+                      ; BI_global_get glob_result
+                      ; BI_local_set x_var
+                      ] ++ following_instr)
+             end
+           else
+             prim_op_instrs <- translate_primitive_operation nenv lenv p' ys ;;
+             let p := call_grow_mem_if_necessary mem 52%N in (* 28 bytes plus 24 for some luft for invariants *)
+             let grow_instr := fst p in
+             let mem' := snd p in
+             following_instr <- translate_body nenv cenv lenv fenv penv e' mem' ;;
+             Ret (grow_instr ++ prim_op_instrs ++ [ BI_local_set x_var ]  ++ following_instr)
        end
    | Ehalt x =>
      x_var <- translate_var nenv lenv x "translate_body halt";;
@@ -504,9 +611,9 @@ Definition collect_function_vars (e : term.exp) : list term.var :=
     end.
 
 (* maps function names to ids (id=index in function list of module) *)
-Definition create_fname_mapping (e : exp) : fname_env :=
+Definition create_fname_mapping (penv : prim_env) (e : exp) : fname_env :=
   let fun_vars := collect_function_vars e in
-  create_var_mapping (N.of_nat num_custom_funs) fun_vars (M.empty _).
+  create_var_mapping (N.of_nat (num_prim_imports penv + num_custom_funs)) fun_vars (M.empty _).
 
 Fixpoint list_function_types (n : nat) : list function_type :=
   match n with
@@ -527,7 +634,10 @@ Fixpoint table_element_mapping (len : nat) (startidx : nat) : list module_elemen
 Definition LambdaANF_to_Wasm (nenv : name_env) (cenv : ctor_env) (penv : prim_env) (e : exp) : error (module * fname_env * localvar_env) :=
   _ <- check_restrictions cenv e;;
 
-  let fname_mapping := create_fname_mapping e in
+  let imports := prim_imports penv in
+  let num_imports := length imports in
+
+  let fname_mapping := create_fname_mapping penv e in
 
   fns <- match e with
          | Efun fds exp => translate_functions nenv cenv fname_mapping penv fds
@@ -543,7 +653,7 @@ Definition LambdaANF_to_Wasm (nenv : name_env) (cenv : ctor_env) (penv : prim_en
   let main_lenv := create_local_variable_mapping main_vars in
   main_instr <- translate_body nenv cenv main_lenv fname_mapping penv main_expr 0%N;;
 
-  let main_function := {| fidx := main_function_idx
+  let main_function := {| fidx := main_function_idx num_imports
                         ; export_name := main_function_name
                         ; type := 0%N (* [] -> [] *)
                         ; locals := map (fun _ => T_num T_i32) main_vars
@@ -569,7 +679,9 @@ Definition LambdaANF_to_Wasm (nenv : name_env) (cenv : ctor_env) (penv : prim_en
                     |} :: nil
   in
 
-  let elements := table_element_mapping (length fns + num_custom_funs) 0 in
+  (* the imported functions are only ever called directly, but including them keeps
+     the table index of a function equal to its function index *)
+  let elements := table_element_mapping (num_imports + length fns + num_custom_funs) 0 in
 
   let functions_final := map (fun f => {| modfunc_type := f.(type)
                                         ; modfunc_locals := f.(locals)
@@ -581,7 +693,7 @@ Definition LambdaANF_to_Wasm (nenv : name_env) (cenv : ctor_env) (penv : prim_en
       {| mod_types := ftys (* more than required, doesn't hurt*)
 
        ; mod_funcs := functions_final
-       ; mod_tables := [ {| modtab_type := {| tt_limits := {| lim_min := N.of_nat (List.length fns + num_custom_funs)
+       ; mod_tables := [ {| modtab_type := {| tt_limits := {| lim_min := N.of_nat (num_imports + List.length fns + num_custom_funs)
                                                             ; lim_max := None |}
                                             ; tt_elem_type := T_funcref
                                             |} |}]
@@ -620,7 +732,7 @@ Definition LambdaANF_to_Wasm (nenv : name_env) (cenv : ctor_env) (penv : prim_en
        ; mod_elems := elements
        ; mod_datas := []
        ; mod_start := None
-       ; mod_imports := []
+       ; mod_imports := map (fun p => prim_import_declaration (snd p)) imports
        ; mod_exports := exports
        |}
        in

@@ -43,10 +43,68 @@ Import bytestring MRString.
 Import ListNotations.
 Import seq.
 
+(* Simplify a [LambdaANF_to_Wasm] equation under the assumption that there are no
+   prim imports: zeta-reduce the lets, replace the list of imports by [] and
+   compute the resulting indices. *)
+Ltac no_prim_imports Hno H :=
+  cbv zeta in H;
+  rewrite Hno in H;
+  cbn [Datatypes.length Nat.add main_function_idx N.of_nat] in H.
+
+(* The instantiation proof is for modules without imports, i.e. for programs that
+   don't use primitive operations realized by the host, see [prim_is_imported]. *)
+Lemma num_prim_imports_zero : forall penv,
+  prim_imports penv = [] -> num_prim_imports penv = 0.
+Proof.
+  intros ? Hno. unfold num_prim_imports. now rewrite Hno.
+Qed.
+
+Lemma create_fname_mapping_no_imports : forall penv e,
+  prim_imports penv = [] ->
+  create_fname_mapping penv e
+  = create_var_mapping (N.of_nat num_custom_funs) (collect_function_vars e) (M.empty _).
+Proof.
+  intros ?? Hno. unfold create_fname_mapping. now rewrite (num_prim_imports_zero _ Hno).
+Qed.
+
+(* The function-name mapping returned by the pipeline is [create_fname_mapping],
+   independently of how many primitives are imported. *)
+Lemma LambdaANF_to_Wasm_fname_mapping : forall nenv cenv penv e mdl fenv lenv,
+  LambdaANF_to_Wasm nenv cenv penv e = Ret (mdl, fenv, lenv) ->
+  fenv = create_fname_mapping penv e.
+Proof.
+  intros ??????? H. unfold LambdaANF_to_Wasm in H.
+  destruct (check_restrictions _ _) =>//.
+  destruct e =>//.
+  destruct (translate_functions _ _ _ _ _) =>//.
+  cbn in H. destruct (translate_body _ _ _ _ _ _ _) =>//.
+  by inv H.
+Qed.
+
+(* Same, plus the local-variable mapping of the main function. *)
+Lemma LambdaANF_to_Wasm_mappings : forall nenv cenv penv fds e mdl fenv lenv,
+  LambdaANF_to_Wasm nenv cenv penv (Efun fds e) = Ret (mdl, fenv, lenv) ->
+  fenv = create_fname_mapping penv (Efun fds e)
+  /\ lenv = create_local_variable_mapping (collect_local_variables e).
+Proof.
+  intros ???????? H. unfold LambdaANF_to_Wasm in H.
+  destruct (check_restrictions _ _) =>//.
+  destruct (translate_functions _ _ _ _ _) =>//.
+  cbn in H. destruct (translate_body _ _ _ _ _ _ _) =>//.
+  by inv H.
+Qed.
+
+(* Peels off the first conjunct of context_restr ("imported functions are
+   well-typed"): under Hno there are no imports, so its premises are contradictory.
+   Leaves the remaining conjuncts untouched for [repeat split]. *)
+Ltac solve_no_prim_imports_typing Hno :=
+  split; first by (let H := fresh "Hprim_in" in intros ??? H ?; rewrite Hno in H; inv H).
+
 Section INSTANTIATION.
 Variable cenv   : ctor_env.
 Variable nenv   : name_env.
 Variable penv   : prim_env.
+Hypothesis Hno_prim_imports : prim_imports penv = [].
 
 Context `{ho : host}.
 Variable hfn : host_function.
@@ -278,7 +336,7 @@ Qed.
 Lemma translate_functions_exists_original_fun : forall fds fds'' fns wasmFun e eAny fenv,
   NoDup (collect_function_vars (Efun fds e)) ->
   translate_functions nenv cenv fenv penv fds = Ret fns ->
-  fenv = create_fname_mapping (Efun fds'' eAny) ->
+  fenv = create_fname_mapping penv (Efun fds'' eAny) ->
   In wasmFun fns ->
   exists f t ys e, find_def f fds = Some (t, ys, e) /\ (type wasmFun) = N.of_nat (length ys) /\ @repr_funvar fenv f (wasmFun.(fidx)).
 Proof.
@@ -364,7 +422,7 @@ Proof.
 Qed.
 
 Lemma translate_functions_increasing_fids : forall fds fns fenv eAny1 eAny2,
-  fenv = create_fname_mapping (Efun fds eAny1) ->
+  fenv = create_fname_mapping penv (Efun fds eAny1) ->
   map_injective fenv ->
   NoDup (collect_function_vars (Efun fds eAny2)) ->
   translate_functions nenv cenv fenv penv fds = Ret fns ->
@@ -395,8 +453,8 @@ Proof.
 
   unfold create_fname_mapping in Hi', Hj'.
   rewrite -(Nat2N.id i) in Hiv. rewrite -(Nat2N.id j) in Hjv'.
-  rewrite (var_mapping_list_lt_length_nth_error_idx _ _ (N.of_nat num_custom_funs) _ _ Hiv) in Hi'; auto.
-  rewrite (var_mapping_list_lt_length_nth_error_idx _ _ (N.of_nat num_custom_funs) _ _ Hjv') in Hj'; auto.
+  rewrite (var_mapping_list_lt_length_nth_error_idx _ _ (N.of_nat (num_prim_imports penv + num_custom_funs)) _ _ Hiv) in Hi'; auto.
+  rewrite (var_mapping_list_lt_length_nth_error_idx _ _ (N.of_nat (num_prim_imports penv + num_custom_funs)) _ _ Hjv') in Hj'; auto.
   remember (_ + N.of_nat i)%N as i''. injection Hi' as ->.
   remember (_ + N.of_nat j)%N as j''. injection Hj' as ->. lia.
 Qed.
@@ -479,7 +537,7 @@ Proof.
 Qed.
 
 Lemma translate_functions_NoDup : forall fds fns fenv eAny1 eAny2,
-  fenv = create_fname_mapping (Efun fds eAny1) ->
+  fenv = create_fname_mapping penv (Efun fds eAny1) ->
   map_injective fenv ->
   NoDup (collect_function_vars (Efun fds eAny2)) ->
   translate_functions nenv cenv fenv penv fds = Ret fns ->
@@ -530,12 +588,12 @@ Qed.
 
 Lemma translate_functions_nth_error_idx : forall eAny1 eAny2 fds fns j func,
   NoDup (collect_function_vars (Efun fds eAny1)) ->
-  translate_functions nenv cenv (create_fname_mapping (Efun fds eAny2)) penv fds = Ret fns ->
+  translate_functions nenv cenv (create_fname_mapping penv (Efun fds eAny2)) penv fds = Ret fns ->
   nth_error fns j = Some func ->
   j = N.to_nat (fidx func) - num_custom_funs.
 Proof.
   intros ?????? Hnodup Hfns Hin.
-  assert (Hinj: map_injective (create_fname_mapping (Efun fds eAny1))). {
+  assert (Hinj: map_injective (create_fname_mapping penv (Efun fds eAny1))). {
     by apply create_local_variable_mapping_injective.
   }
   have H'' := translate_functions_increasing_fids _ _ _ _ _ Logic.eq_refl Hinj Hnodup Hfns.
@@ -544,6 +602,7 @@ Proof.
     intros ? Hidx.
     have H' := translate_functions_idx_bounds _ _ _ _ _ _ Hfns _ Hidx. apply H'.
     intros ? ? Hf.
+    rewrite (create_fname_mapping_no_imports _ _ Hno_prim_imports) in Hf.
     split. { apply local_variable_mapping_gt_idx in Hf. lia. }
     apply var_mapping_list_lt_length' in Hf.
     rewrite collect_function_vars_length in Hf.
@@ -797,6 +856,7 @@ Theorem module_instantiate : forall e module fenv venv (hs : host_state),
   instantiate initial_store module [] (sr, fr, es_post).
 Proof.
   intros ????? Hcenv Hnodup H. unfold LambdaANF_to_Wasm in H.
+  no_prim_imports Hno_prim_imports H.
   destruct (check_restrictions cenv e) eqn:Hrestr. inv H. destruct u.
   eapply check_restrictions_expression_restricted in Hrestr; last by apply rt_refl.
   destruct e =>//.
@@ -871,6 +931,7 @@ Proof.
             apply t_step. by apply dsubterm_fds2. }
         eapply repr_expr_LambdaANF_Wasm_typing =>//; last by eassumption.
         2: { (* expr restr *) by inv Hrestr. }
+        solve_no_prim_imports_typing Hno_prim_imports.
         repeat split =>//.
         * (* locals in bound *)
           intros ?? Hvar. cbn.
@@ -942,7 +1003,8 @@ Proof.
         split.
         eapply repr_expr_LambdaANF_Wasm_typing =>//; last by apply Hexpr'.
         { (* context restrictions *)
-          repeat split =>//.
+          solve_no_prim_imports_typing Hno_prim_imports.
+        repeat split =>//.
           * (* locs i32 *)
             intros ?? Hvar'.
             rewrite Hlocs Htype Nat2N.id. unfold lookup_N. cbn.
@@ -1005,10 +1067,12 @@ Proof.
         assert (Hbounds: (N.of_nat num_custom_funs <= fidx w < N.of_nat (length fns + num_custom_funs))%N). {
           eapply translate_functions_idx_bounds; eauto.
           2:{ apply In_map. now eapply nth_error_In. }
-          intros. split; first by apply local_variable_mapping_gt_idx in H; lia.
-          apply var_mapping_list_lt_length' in H.
-          rewrite collect_function_vars_length in H.
-          erewrite (translate_functions_length _ fns) in H; eauto. lia.
+          intros ?? Hf.
+          rewrite (create_fname_mapping_no_imports _ _ Hno_prim_imports) in Hf.
+          split; first by apply local_variable_mapping_gt_idx in Hf; lia.
+          apply var_mapping_list_lt_length' in Hf.
+          rewrite collect_function_vars_length in Hf.
+          erewrite (translate_functions_length _ fns) in Hf; eauto. lia.
         }
         unfold num_custom_funs in *. unfold lookup_N.
         destruct (N.to_nat (fidx w)) eqn:Hidx; first by lia. cbn in Hnth.
@@ -1092,6 +1156,7 @@ Import Relations.Relation_Operators.
 Variable cenv:LambdaANF.term.ctor_env.
 Variable nenv : LambdaANF.cps_show.name_env.
 Variable penv : LambdaANF.toplevel.prim_env.
+Hypothesis Hno_prim_imports : prim_imports penv = [].
 
 Context `{ho : host}.
 
@@ -1226,6 +1291,7 @@ Proof.
     HfnsLength Hcompile Hinst.
   unfold instantiate in Hinst.
   unfold LambdaANF_to_Wasm in Hcompile.
+  no_prim_imports Hno_prim_imports Hcompile.
   remember (list_function_types (Z.to_nat max_function_args)) as types.
   destruct (check_restrictions cenv (Efun fds e)) eqn:HRestr. inv Hcompile.
   destruct (translate_functions nenv cenv _ penv fds) eqn:HtransFns. inv Hcompile. simpl in Hcompile.
@@ -1419,7 +1485,7 @@ Proof.
     unfold num_custom_funs in *.
 
     assert (HnodupFns: NoDup fns). {
-      assert (Hinj: map_injective (create_fname_mapping (Efun fds e))). {
+      assert (Hinj: map_injective (create_fname_mapping penv (Efun fds e))). {
         by apply create_local_variable_mapping_injective. }
       have H' := translate_functions_NoDup _ _ _ _ _ _ _ _ Logic.eq_refl Hinj Hnodup HtransFns.
       now eapply NoDup_map_inv.
@@ -2064,7 +2130,7 @@ exists sr fr,
 Proof.
   intros ??????? Hnodup HeRestr HcenvCorrect Hnumfuns HfnsLength LANF2Wasm.
   (* module instantiates *)
-  have HINST := @module_instantiate _ nenv _  _ _ _ _ _ _ _ hs HcenvCorrect Hnodup LANF2Wasm.
+  have HINST := @module_instantiate _ nenv _ Hno_prim_imports _ _ _ _ _ _ _ hs HcenvCorrect Hnodup LANF2Wasm.
   destruct HINST as [sr [fr [es_post Hinst]]].
 
   assert (HcenvCorrect' : (forall (f : var) (t : fun_tag) (ys : seq var) (e : exp),
@@ -2083,16 +2149,11 @@ Proof.
              M.get f0 fenv = Some f' ->
              N.to_nat f' < num_funs + num_custom_funs)). {
     intros.
-    unfold LambdaANF_to_Wasm in LANF2Wasm.
-    remember (list_function_types (Z.to_nat max_function_args)) as ftypes.
-    destruct (check_restrictions cenv (Efun fds e))=>//.
-    destruct (translate_functions _ _ _ _ _) eqn:Hfuns=>//.
-    rename l into fns. cbn in LANF2Wasm.
-    destruct (translate_body nenv cenv _ _ _) eqn:Hexpr=>//.
-    inv LANF2Wasm. rename l into wasm_main_instr.
-    unfold create_fname_mapping in H.
+    have Hfenv := LambdaANF_to_Wasm_fname_mapping _ _ _ _ _ _ _ LANF2Wasm. subst fenv.
+    rewrite (create_fname_mapping_no_imports _ _ Hno_prim_imports) in H.
     eapply var_mapping_list_lt_length' in H.
-    now rewrite collect_function_vars_length in H. }
+    rewrite collect_function_vars_length in H.
+    unfold num_custom_funs in *. cbn in H. lia. }
 
   (* post-instantiation *)
   have HinstPost := post_instantiation_reduce hs _ _ _ _ HfenvBound Hinv_inst Logic.eq_refl.

@@ -460,6 +460,30 @@ Inductive repr_expr_LambdaANF_Wasm {lenv} : LambdaANF.term.exp -> N -> list basi
     repr_expr_LambdaANF_Wasm (Eprim x p ys e) mem
       (grow_instr ++ prim_instrs ++ [ BI_local_set x' ] ++  e')
 
+(* primitive realized by a host function, called through an import *)
+| R_prim_import : forall x x' p pr fidx ys args' e e' mem,
+    repr_var (lenv:=lenv) x x' ->
+    (* the host may have allocated, so no static guarantees about memory afterwards *)
+    repr_expr_LambdaANF_Wasm e 0%N e' ->
+    M.get p penv = Some pr ->
+    prim_is_imported pr = true ->
+    prim_import_idx penv p = Some fidx ->
+    length ys = pr.(Pipeline_utils.prim_arity) ->
+    (* args are provided properly *)
+    repr_fun_args_Wasm (lenv:=lenv) ys args' ->
+
+    repr_expr_LambdaANF_Wasm (Eprim x p ys e) mem
+      (args' ++
+       [ BI_call fidx
+       ; BI_global_get glob_out_of_mem
+       ; BI_if (BT_valtype None)
+           (* host signalled out of memory *)
+           [ BI_return ]
+           []
+       ; BI_global_get glob_result
+       ; BI_local_set x'
+       ] ++ e')
+
 with repr_branches {lenv}: localidx -> list (ctor_tag * exp) -> N -> list (N * list basic_instruction) -> list (N * list basic_instruction) -> Prop :=
 | Rbranch_nil : forall x mem,
     repr_branches x [] mem [] []
@@ -701,6 +725,25 @@ Proof.
     destruct (penv ! p) eqn:Hp. 2: inv H1.
     destruct (translate_var nenv lenv v _) eqn:Hvar. inv H1.
     apply translate_var_Ret in Hvar.
+    destruct (prim_is_imported p0) eqn:Himported.
+    { (* realized by a host function, called through an import *)
+      destruct (prim_import_idx penv p) eqn:Hidx. 2: inv H1.
+      unfold assert in H1.
+      destruct (Nat.eqb (length l) p0.(Pipeline_utils.prim_arity)) eqn:Harity. 2: inv H1.
+      apply Nat.eqb_eq in Harity.
+      cbn in H1.
+      destruct (pass_function_args nenv lenv fenv l) eqn:Hargs. inv H1.
+      destruct (translate_body nenv cenv lenv fenv penv e 0%N) eqn:H_eqTranslate. inv H1.
+      inv H1.
+      eapply R_prim_import; try eassumption.
+      - econstructor; eassumption.
+      - assert (Hcenv': correct_cenv_of_exp cenv e). {
+          intro; intros. eapply Hcenv. eapply rt_trans. eauto. constructor.
+          now econstructor.
+        }
+        now eapply IHe.
+      - now apply pass_function_args_correct.
+    }
     destruct (translate_primitive_operation _) eqn:Hprimop. inv H1.
     destruct (call_grow_mem_if_necessary mem 52) eqn:Hgrow. inv H1.
     destruct (translate_body nenv cenv lenv fenv penv e _) eqn:H_eqTranslate. inv H0.
@@ -3323,12 +3366,19 @@ Proof.
     eapply H'. apply clos_tn1_trans in H1. now apply t_then_rt.
   - (* Eprim *)
     inv Hexpr.
-    have H' := IHe_body _ _ H5.
-    apply rt_then_t_or_eq in H.
-    destruct H as [H|H]. congruence.
-    apply clos_trans_tn1 in H. inv H.
-    inv H0. eapply H'. apply rt_refl. inv H0.
-    eapply H'. apply clos_tn1_trans in H1. now apply t_then_rt.
+    + have H' := IHe_body _ _ H5.
+      apply rt_then_t_or_eq in H.
+      destruct H as [H|H]. congruence.
+      apply clos_trans_tn1 in H. inv H.
+      inv H0. eapply H'. apply rt_refl. inv H0.
+      eapply H'. apply clos_tn1_trans in H1. now apply t_then_rt.
+    + (* realized by an import *)
+      have H' := IHe_body _ _ H5.
+      apply rt_then_t_or_eq in H.
+      destruct H as [H|H]. congruence.
+      apply clos_trans_tn1 in H. inv H.
+      inv H0. eapply H'. apply rt_refl. inv H0.
+      eapply H'. apply clos_tn1_trans in H1. now apply t_then_rt.
   - (* Ehalt *)
     apply rt_then_t_or_eq in H. destruct H; first congruence.
     apply clos_trans_tn1 in H. inv H. inv H0. by inv H0.
@@ -5787,6 +5837,8 @@ Proof with eauto.
   intros k fAny mem lh lenv HlenvInjective HenvsDisjoint state sr fr instructions
          Hfds HlocInBound Hinv HmemAvail Hrepr_e HrelE.
     { cbn. inv Hrepr_e.
+      2: { (* TODO: primitive operation realized by a host function (import) *)
+           admit. }
       have I := Hinv. destruct I as [_[_[_[Hgmp_w[_[Hmut[Horglinmem [_[_[HfnsBound[_[_[_[_ [HfuncGrow _]]]]]]]]]]]]]]].
       destruct Horglinmem as [Horgmem1 [orgm [Horgmem2 [orgsize [<- [Horgmem4 Horgmem5]]]]]].
 
@@ -5952,7 +6004,7 @@ Proof with eauto.
         intro Hcontra. rewrite Hcontra in HoutofM. inv HoutofM. }
     }
   Unshelve. all: assumption.
-Qed.
+Admitted. (* TODO: Eprim case for primitives realized by imports *)
 
 Lemma bs_wasm_related_Ehalt : forall pfs fds,
   bs_wasm_assumptions pfs fds ->

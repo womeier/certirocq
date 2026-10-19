@@ -30,6 +30,9 @@ Section TOPLEVEL.
 Variable cenv:LambdaANF.term.ctor_env.
 Variable nenv : LambdaANF.cps_show.name_env.
 Variable penv : LambdaANF.toplevel.prim_env.
+(* the proof covers programs without primitives realized by the host, see
+   [prim_is_imported] *)
+Hypothesis Hno_prim_imports : prim_imports penv = [].
 
 Context `{ho : host}.
 
@@ -63,12 +66,14 @@ Theorem LambdaANF_Wasm_related :
 
     exists sr',
     (* execute main function *)
-    reduce_trans (hs, sr,  (Build_frame [] (f_inst fr)), [ AI_basic (BI_call main_function_idx) ])
+    reduce_trans (hs, sr,  (Build_frame [] (f_inst fr)), [ AI_basic (BI_call (main_function_idx (num_prim_imports penv))) ])
                  (hs, sr', (Build_frame [] (f_inst fr)), [])    /\
     (* result variable has the correct value set *)
     result_val_LambdaANF_Wasm cenv fenv penv v sr' (f_inst fr).
 Proof.
   intros ???????? HprimFunsRet HprimFunsRelated Hcenv HcenvRestr HvarsNodup Hfreevars Hstep LANF2Wasm.
+  replace (main_function_idx (num_prim_imports penv)) with 0%N
+    by (rewrite (num_prim_imports_zero _ Hno_prim_imports); reflexivity).
   assert (exists fds e', e = Efun fds e') as [fds [e' ->]]. {
     unfold LambdaANF_to_Wasm in LANF2Wasm.
     destruct (check_restrictions cenv e)=>//.
@@ -89,7 +94,7 @@ Proof.
     now eapply NoDup_app_remove_l in HvarsNodup.
   }
 
-  have HI := @instantiation_combined_INV_and_more _ _ _ _ _ _ _ _ _ _ _ _ hs Hnodup' HeRestr
+  have HI := @instantiation_combined_INV_and_more _ _ _ Hno_prim_imports _ _ _ _ _ _ _ _ _ hs Hnodup' HeRestr
                Hcenv Logic.eq_refl Hmaxfuns LANF2Wasm.
   destruct HI as [sr [fr [Hinst [Hinv [HinstFuncs [HfVal [main_fn [e' [fns [-> [Hfuncs [Hexpr' Hfns']]]]]]]]]]]].
 
@@ -98,20 +103,14 @@ Proof.
 
   remember (Build_frame (repeat (VAL_num (nat_to_value 0)) (length (collect_local_variables e))) (f_inst fr)) as f_before_IH.
 
-  unfold LambdaANF_to_Wasm in LANF2Wasm.
-  remember (list_function_types (Z.to_nat max_function_args)) as ftypes.
-  destruct (check_restrictions cenv _). inv LANF2Wasm.
-  destruct (translate_functions _ _ _ _ _) eqn:Hfuns=>//. simpl in LANF2Wasm.
-  destruct (translate_body _ _ _ _ _) eqn:Hexpr. inv LANF2Wasm. rename l into fns'. rename l0 into wasm_main_instr.
-  inv LANF2Wasm.
-
+  (* the mappings returned by the pipeline are determined by the source program *)
+  have [Hfenv Hlenv] := LambdaANF_to_Wasm_mappings _ _ _ _ _ _ _ _ LANF2Wasm.
+  subst fenv lenv.
   (* from lemma module_instantiate_INV_and_more_hold *)
-  assert (e' = wasm_main_instr) by congruence. subst e'. clear Hexpr'.
-  assert (fns = fns') by congruence. subst fns'. clear Hfns'.
+  rename e' into wasm_main_instr. rename Hexpr' into Hexpr. rename Hfns' into Hfuns.
 
-  remember (Build_frame (repeat (VAL_num (nat_to_value 0)) (length (collect_local_variables e))) (f_inst fr)) as f_before_IH.
   remember (create_local_variable_mapping (collect_local_variables e)) as lenv.
-  remember (create_fname_mapping (Efun fds e)) as fenv.
+  remember (create_fname_mapping penv (Efun fds e)) as fenv.
 
    assert (HlocInBound: (forall (var : positive) (varIdx : funcidx),
           repr_var (lenv:=lenv) var varIdx -> N.to_nat varIdx < Datatypes.length (f_locs f_before_IH))).

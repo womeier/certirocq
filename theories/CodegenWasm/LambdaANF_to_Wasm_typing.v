@@ -39,6 +39,14 @@ Ltac separate_instr :=
 
 (* for main function, translated fns *)
 Definition context_restr (lenv: localvar_env) (c: t_context) :=
+  (* imported functions realizing primitive operations, see [prim_imports].
+     Stated via [In _ (prim_imports penv)] rather than [prim_is_imported]: unfolding
+     the latter forces [KernameMap.find _ primop_map], which makes tactics that
+     compute (done, discriminate, cbn) extremely slow on this goal. *)
+  (forall p pr fidx, In (p, pr) (prim_imports penv) ->
+     prim_import_idx penv p = Some fidx ->
+     lookup_N (tc_funcs c) fidx
+     = Some (Tf (repeat (T_num T_i32) pr.(Pipeline_utils.prim_arity)) [::])) /\
   (* locals in bound, i32 *)
   (forall x x', @repr_var lenv x x' -> lookup_N (tc_locals c) x' = Some (T_num T_i32)) /\
   (* globals i32, mut *)
@@ -254,7 +262,7 @@ Lemma prim_op_typing {lenv} : forall c ys op instrs,
 Proof.
   intros c ys op instrs Hcontext Hinstrs.
   assert (exists m, lookup_N (tc_mems c) 0 = Some m) as [m Hmem]. {
-    destruct Hcontext as (_ & _ & _ & _ & Hmems &_), (tc_mems c); now eexists. }
+    destruct Hcontext as (_ & _ & _ & _ & _ & Hmems &_), (tc_mems c); now eexists. }
   assert (Hcontext': context_restr lenv (upd_label c ([:: [:: T_num T_i32]] ++ tc_labels c)))
       by now inv Hcontext.
   assert (Hmem' : lookup_N (tc_mems (upd_label c ([:: [:: T_num T_i32]] ++ tc_labels c))) 0 = Some m)
@@ -383,6 +391,17 @@ Proof.
     eapply prim_op_typing; eauto.
     prepare_solve_bet. solve_bet Hcontext'.
     inv Hrestr'; by apply IH.
+  - (* Eprim, realized by a host function (import) *)
+    intros ?????????? Hvar Hexpr' IH Hp Himp Hidx Harity Hargs ? Hcontext' Hrestr'.
+    (* [prim_is_imported] must not stay in the context: unfolding it forces
+       [KernameMap.find _ primop_map], which makes the automation below take minutes *)
+    have Hin := prim_imports_In _ _ _ Hp Himp. clear Hp Himp.
+    prepare_solve_bet; try solve_bet Hcontext'.
+    + now eapply fun_args_typing.
+    + apply bet_call. rewrite Harity.
+      destruct Hcontext' as [Himports _].
+      eapply Himports; last eassumption. exact Hin.
+    + inv Hrestr'. by apply IH.
   - (* repr_branches nil *)
     intros ?????? Hcontext' Hrestr' Hvar Hboxed Hunboxed.
     inv Hboxed. inv Hunboxed. by split; solve_bet Hcontext'.
