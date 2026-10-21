@@ -311,12 +311,12 @@ Fixpoint translate_body (nenv : name_env) (cenv : ctor_env) (lenv: localvar_env)
           following_instr <- translate_body nenv cenv lenv fenv penv e' mem' ;;
           Ret (grow_mem_instr ++
                store_constr ++
-               (* the constructor's value is the base address of its block *)
-               [ BI_global_get glob_mem_ptr
-               ; BI_local_set x_var
-               ] ++
-               (* advance the allocation pointer past the whole block *)
+               (* the constructor's value is the base address of its block: keep
+                  it on the stack while the allocation pointer is advanced past
+                  the whole block, then bind it. *)
+               [ BI_global_get glob_mem_ptr ] ++
                increment_glob_mem_ptr glob_mem_ptr (N.of_nat (4 * (1 + length ys))) ++
+               [ BI_local_set x_var ] ++
                following_instr)
       end
    | Ecase x arms =>
