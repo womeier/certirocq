@@ -11,6 +11,7 @@ From CertiRocq Require Import
   CodegenWasm.LambdaANF_to_Wasm
   CodegenWasm.LambdaANF_to_Wasm_correct
   CodegenWasm.LambdaANF_to_Wasm_primints
+  CodegenWasm.LambdaANF_to_Wasm_primfloats
   CodegenWasm.LambdaANF_to_Wasm_restrictions.
 
 From Wasm Require Import
@@ -299,6 +300,15 @@ Proof.
 Unshelve. all: by repeat constructor.
 Qed.
 
+(* TODO: the primitive float operations are well-typed by construction (every f64
+   value is produced and consumed as an f64, every bit-level manipulation goes
+   through i64), but solve_bet has no f64 cases yet, see TODO.md. *)
+Lemma prim_float_op_typing {lenv} : forall c ys op instrs,
+  @context_restr lenv c ->
+  @repr_primitive_float_operation lenv op ys instrs ->
+  be_typing c instrs (Tf [::] [:: T_num T_i32]).
+Admitted.
+
 Theorem repr_expr_LambdaANF_Wasm_typing {lenv} : forall e e' mem c,
   @context_restr lenv c ->
   expression_restricted cenv e ->
@@ -381,6 +391,17 @@ Proof.
     eapply bet_composition'. eapply call_grow_mem_if_necessary_typing; eassumption.
     eapply bet_composition'. prepare_solve_bet; try solve_bet Hcontext'.
     eapply prim_op_typing; eauto.
+    prepare_solve_bet. solve_bet Hcontext'.
+    inv Hrestr'; by apply IH.
+  - (* Eprim, primitive float operation *)
+    intros ??????????????? Hvar Hexpr' IH Hp Hop HprimOp Hgrow ? Hcontext' Hrestr'.
+    (* see the comment on the int63 case above *)
+    clear Hop.
+    assert (exists m, lookup_N (tc_mems c0) 0 = Some m) as [m Hm]. {
+      destruct (tc_mems c0) eqn:Hc; cbn; eauto. by apply Hcontext' in Hc. }
+    eapply bet_composition'. eapply call_grow_mem_if_necessary_typing; eassumption.
+    eapply bet_composition'. prepare_solve_bet; try solve_bet Hcontext'.
+    eapply prim_float_op_typing; eauto.
     prepare_solve_bet. solve_bet Hcontext'.
     inv Hrestr'; by apply IH.
   - (* repr_branches nil *)

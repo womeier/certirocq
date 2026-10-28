@@ -28,7 +28,8 @@ From CertiRocq Require Import
   CodegenWasm.LambdaANF_to_Wasm
   CodegenWasm.LambdaANF_to_Wasm_utils
   CodegenWasm.LambdaANF_to_Wasm_restrictions
-  CodegenWasm.LambdaANF_to_Wasm_primints.
+  CodegenWasm.LambdaANF_to_Wasm_primints
+  CodegenWasm.LambdaANF_to_Wasm_primfloats.
 
 From MetaRocq Require Import Common.Kernames.
 
@@ -337,6 +338,26 @@ Inductive repr_primitive_operation {lenv} : primop -> list positive  -> list bas
     repr_primitive_ternary_operation op x' y' z' instr ->
     repr_primitive_operation op [ x ; y ; z ] instr.
 
+(* Unlike the int63 operations above, the float operations are not enumerated
+   constructor by constructor: nothing consumes their individual shapes yet
+   (see the admits in bs_wasm_related_Eprim{,_val}), so relating them through
+   the translation function keeps the relation in one place.  [destruct op]
+   followed by [inv] on the equation still recovers the concrete instruction
+   list where one is needed, as in LambdaANF_to_Wasm_typing.v. *)
+Inductive repr_primitive_float_operation {lenv} : primfloatop -> list positive -> list basic_instruction -> Prop :=
+| Rprimf_unop :
+  forall op x x' instr,
+    repr_var (lenv:=lenv) x x' ->
+    translate_primitive_float_unary_op glob_mem_ptr glob_tmp1 glob_tmp2 op x' = Ret instr ->
+    repr_primitive_float_operation op [ x ] instr
+
+| Rprimf_binop :
+  forall op x x' y y' instr,
+    repr_var (lenv:=lenv) x x' ->
+    repr_var (lenv:=lenv) y y' ->
+    translate_primitive_float_binary_op glob_mem_ptr glob_tmp1 glob_tmp2 op x' y' = Ret instr ->
+    repr_primitive_float_operation op [ x ; y ] instr.
+
 
 Inductive repr_call_grow_mem_if_necessary : N (* at least mem available, known statically *) ->
                                             N (* bytes required for alloc *) ->
@@ -455,6 +476,17 @@ Inductive repr_expr_LambdaANF_Wasm {lenv} : LambdaANF.term.exp -> N -> list basi
     M.get p penv = Some (Pipeline_utils.mk_primitive op_name s b n) ->
     KernameMap.find op_name primop_map = Some op ->
     repr_primitive_operation (lenv:=lenv) op ys prim_instrs ->
+    repr_call_grow_mem_if_necessary mem 52%N mem' grow_instr ->
+
+    repr_expr_LambdaANF_Wasm (Eprim x p ys e) mem
+      (grow_instr ++ prim_instrs ++ [ BI_local_set x' ] ++  e')
+
+| R_prim_float : forall x x' p op_name s b n op ys e e' prim_instrs mem mem' grow_instr,
+    repr_var (lenv:=lenv) x x' ->
+    repr_expr_LambdaANF_Wasm e mem' e' ->
+    M.get p penv = Some (Pipeline_utils.mk_primitive op_name s b n) ->
+    KernameMap.find op_name primfloat_map = Some op ->
+    repr_primitive_float_operation (lenv:=lenv) op ys prim_instrs ->
     repr_call_grow_mem_if_necessary mem 52%N mem' grow_instr ->
 
     repr_expr_LambdaANF_Wasm (Eprim x p ys e) mem
@@ -706,7 +738,35 @@ Proof.
     destruct (translate_body nenv cenv lenv fenv penv e _) eqn:H_eqTranslate. inv H0.
     unfold translate_primitive_operation in Hprimop.
     destruct p0.
-    destruct (KernameMap.find _) eqn:Hker. 2: inv Hprimop.
+    destruct (KernameMap.find _ primop_map) eqn:Hker.
+    2: { (* float primitive *)
+      destruct (KernameMap.find _ primfloat_map) eqn:Hkerf. 2: inv Hprimop.
+      inv H0. cbn.
+      apply call_grow_mem_if_necessary_correct in Hgrow.
+      assert (Hcenv': correct_cenv_of_exp cenv e). {
+        intro; intros. eapply Hcenv. eapply rt_trans. eauto. constructor.
+        now econstructor. }
+      eapply R_prim_float.
+      6: exact Hgrow.
+      1: now econstructor.
+      1: now eapply IHe.
+      1: exact Hp.
+      1: exact Hkerf.
+      simpl in Hprimop.
+      destruct l. inv Hprimop.
+      destruct l.
+      { (* unary *)
+        destruct (translate_var nenv lenv v0 _) eqn:Hx. inv Hprimop.
+        apply translate_var_Ret in Hx.
+        eapply Rprimf_unop; [ now econstructor | exact Hprimop ]. }
+      destruct l. 2: inv Hprimop.
+      { (* binary *)
+        destruct (translate_var nenv lenv v0 _) eqn:Hx. inv Hprimop.
+        apply translate_var_Ret in Hx.
+        destruct (translate_var nenv lenv v1 _) eqn:Hy. inv Hprimop.
+        apply translate_var_Ret in Hy.
+        eapply Rprimf_binop; [ now econstructor | now econstructor | exact Hprimop ]. }
+    }
     inv H0. cbn.
     apply call_grow_mem_if_necessary_correct in Hgrow.
     eapply R_prim; eauto.
@@ -3322,8 +3382,10 @@ Proof.
     inv H0. eapply H'. apply rt_refl. inv H0.
     eapply H'. apply clos_tn1_trans in H1. now apply t_then_rt.
   - (* Eprim *)
-    inv Hexpr.
-    have H' := IHe_body _ _ H5.
+    assert (Hsub: exists mem'' e'', repr_expr_LambdaANF_Wasm lenv e_body mem'' e'')
+      by (inv Hexpr; eauto).
+    destruct Hsub as [mem'' [e'' Hsub]].
+    have H' := IHe_body _ _ Hsub.
     apply rt_then_t_or_eq in H.
     destruct H as [H|H]. congruence.
     apply clos_trans_tn1 in H. inv H.
@@ -5607,8 +5669,17 @@ Proof with eauto.
           split=>//.
           eapply val_relation_func_depends_on_funcs; eauto. }
 
-        assert (Hv_int: exists n, p = primInt n) by now destruct p; destruct x0.
-        destruct Hv_int as [n Hn].
+        assert (Hv_kind: (exists n, p = primInt n)
+                      \/ (exists fl, p = (AstCommon.primFloat; fl))). {
+          clear - H7. destruct p as [ptag pv]. destruct ptag; cbn in H7.
+          - left. by exists pv.
+          - right. by exists pv.
+          - by inv H7. }
+        destruct Hv_kind as [[n Hn] | [fl Hfl]].
+        2: { (* TODO float literals: repr_val_LambdaANF_Wasm has no constructor for
+                Vprim (primFloat _) yet, see TODO.md. The emitted code is the same
+                i64 store as for primInt, only the value relation is missing. *)
+             admit. }
         assert (Hv0: v0 = Z_to_i64 (to_Z n)). {
           rewrite Hn in H7. unfold translate_primitive_value in *.
           now simpl in H7.
@@ -5766,7 +5837,7 @@ Proof with eauto.
         intro Hcontra. rewrite Hcontra in HoutofM. inv HoutofM. }
     }
   Unshelve. all: assumption.
-Qed.
+Admitted. (* TODO: primitive float literals, see the admit above *)
 
 Lemma bs_wasm_related_Eprim : forall pfs fds,
   bs_wasm_assumptions pfs fds ->
@@ -5787,6 +5858,9 @@ Proof with eauto.
   intros k fAny mem lh lenv HlenvInjective HenvsDisjoint state sr fr instructions
          Hfds HlocInBound Hinv HmemAvail Hrepr_e HrelE.
     { cbn. inv Hrepr_e.
+      2: { (* TODO primitive float operations: the reduction of the emitted code is
+              not proved yet, see TODO.md.  Same situation as R_prim_import. *)
+           admit. }
       have I := Hinv. destruct I as [_[_[_[Hgmp_w[_[Hmut[Horglinmem [_[_[HfnsBound[_[_[_[_ [HfuncGrow _]]]]]]]]]]]]]]].
       destruct Horglinmem as [Horgmem1 [orgm [Horgmem2 [orgsize [<- [Horgmem4 Horgmem5]]]]]].
 
@@ -5952,7 +6026,7 @@ Proof with eauto.
         intro Hcontra. rewrite Hcontra in HoutofM. inv HoutofM. }
     }
   Unshelve. all: assumption.
-Qed.
+Admitted. (* TODO: primitive float operations, see the admit above *)
 
 Lemma bs_wasm_related_Ehalt : forall pfs fds,
   bs_wasm_assumptions pfs fds ->

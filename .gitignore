@@ -118,6 +118,7 @@ result
 /tests/programs/*_opt
 /tests/programs/*_opt[1-5]
 /tests/wasm/CertiRocq.Tests.uint63_unit_tests.*.wasm
+/tests/wasm/CertiRocq.Tests.float_unit_tests.*.wasm
 /tests/wasm/CertiRocq.Tests.tests.*.wasm
 bootstrap/certirocqchk/glue.*
 bootstrap/certirocqc/glue.*

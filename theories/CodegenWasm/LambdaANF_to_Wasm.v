@@ -15,7 +15,8 @@ From CertiRocq Require Import
   LambdaANF.term
   LambdaANF.cps_show
   CodegenWasm.LambdaANF_to_Wasm_restrictions
-  CodegenWasm.LambdaANF_to_Wasm_primints.
+  CodegenWasm.LambdaANF_to_Wasm_primints
+  CodegenWasm.LambdaANF_to_Wasm_primfloats.
 
 From MetaRocq.Utils Require Import bytestring MRString.
 
@@ -235,7 +236,7 @@ Fixpoint create_case_nested_if_chain (boxed : bool) (v : localidx) (es : list (N
 Definition translate_primitive_value (p : AstCommon.primitive_value) : error Wasm_int.Int64.int :=
   match projT1 p as tag return prim_value tag -> error Wasm_int.Int64.T with
   | AstCommon.primInt => fun i => Ret (Wasm_int.Int64.repr (Uint63.to_Z i))
-  | AstCommon.primFloat => fun f => Err "Extraction of floats to Wasm not yet supported"
+  | AstCommon.primFloat => fun f => Ret (Wasm_int.Int64.repr (bits_of_primfloat f))
   | AstCommon.primString => fun f => Err "Extraction of strings to Wasm not yet supported"
   end (projT2 p).
 
@@ -265,7 +266,23 @@ Definition translate_primitive_operation (nenv : name_env) (lenv : localvar_env)
 
       | _ => Err "Only primitive operations with 1, 2 or 3 arguments are supported"
       end
-  | _ => Err ("Unsupported primitive operator: " ++ (Kernames.string_of_kername op_name))%bs
+  | None =>
+      match KernameMap.find op_name primfloat_map with
+      | Some op =>
+          match args with
+          | [ x ] =>
+              x_var <- translate_var nenv lenv x "translate primitive float unop operand";;
+              translate_primitive_float_unary_op glob_mem_ptr glob_tmp1 glob_tmp2 op x_var
+
+          | [ x ; y ] =>
+              x_var <- translate_var nenv lenv x "translate primitive float binary operator 1st operand";;
+              y_var <- translate_var nenv lenv y "translate primitive float binary operator 2nd operand";;
+              translate_primitive_float_binary_op glob_mem_ptr glob_tmp1 glob_tmp2 op x_var y_var
+
+          | _ => Err "Only primitive float operations with 1 or 2 arguments are supported"
+          end
+      | None => Err ("Unsupported primitive operator: " ++ (Kernames.string_of_kername op_name))%bs
+      end
   end.
 
 (* **** GROWING THE LINEAR MEMORY **** *)

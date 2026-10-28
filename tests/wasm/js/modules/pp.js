@@ -228,3 +228,71 @@ export const print_carry = (val, dataView, print_elem) => {
 	const arg = dataView.getInt32(val + 4, true);
 	print_elem(arg, dataView);
 }
+
+/* A primitive float is boxed exactly like a primitive int63: the pointer
+   points at the 8-byte payload, here an IEEE754 binary64 value. */
+export const print_float = (ptr, dataView) => {
+
+    const val = dataView.getFloat64(ptr, true);
+
+    if (Number.isNaN(val)) { process.stdout.write("nan"); }
+    else if (val === Infinity) { process.stdout.write("infinity"); }
+    else if (val === -Infinity) { process.stdout.write("neg_infinity"); }
+    else if (Object.is(val, -0)) { process.stdout.write("-0"); }
+    else { process.stdout.write(val.toString()); }
+}
+
+export const print_float_comparison = (val, dataView) => {
+    if (val & 1) {
+	switch (val >> 1) {
+	case 0:
+	    process.stdout.write("FEq");
+	    break;
+	case 1:
+	    process.stdout.write("FLt");
+	    break;
+	case 2:
+	    process.stdout.write("FGt");
+	    break;
+	case 3:
+	    process.stdout.write("FNotComparable");
+	    break;
+	}
+    }
+    else {}
+}
+
+export const print_float_class = (val, dataView) => {
+    if (val & 1) {
+	switch (val >> 1) {
+	case 0:
+	    process.stdout.write("PNormal");
+	    break;
+	case 1:
+	    process.stdout.write("NNormal");
+	    break;
+	case 2:
+	    process.stdout.write("PSubn");
+	    break;
+	case 3:
+	    process.stdout.write("NSubn");
+	    break;
+	case 4:
+	    process.stdout.write("PZero");
+	    break;
+	case 5:
+	    process.stdout.write("NZero");
+	    break;
+	case 6:
+	    process.stdout.write("PInf");
+	    break;
+	case 7:
+	    process.stdout.write("NInf");
+	    break;
+	case 8:
+	    process.stdout.write("NaN");
+	    break;
+	}
+    }
+    else {}
+}

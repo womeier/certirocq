@@ -10,10 +10,10 @@ OS=$(shell uname)
 STACKSIZE=$(if $(filter Linux,$(OS)),unlimited,65532)
 
 .PHONY: all default clean lib cleanlib
-.PHONY: tests primitive_unit_tests
-.PHONY: run run_tests run_primitive_unit_tests
+.PHONY: tests primitive_unit_tests float_unit_tests
+.PHONY: run run_tests run_primitive_unit_tests run_float_unit_tests
 
-all: run_tests run_primitive_unit_tests
+all: run_tests run_primitive_unit_tests run_float_unit_tests
 
 $(WASMFILES): tests
 
@@ -32,13 +32,19 @@ tests: tests.v lib
 primitive_unit_tests: uint63_unit_tests.v lib
 	rocq c -quiet $(COQOPTS) $<
 
-run: run_tests run_primitive_unit_tests
+run: run_tests run_primitive_unit_tests run_float_unit_tests
 
 run_tests: $(WASMFILES)
 	ulimit -s $(STACKSIZE) && ./run_wasm_tests.py
 
 run_primitive_unit_tests: primitive_unit_tests
 	node --stack-size=10000000 js/run_uint63_unit_tests.js
+
+float_unit_tests: float_unit_tests.v lib
+	rocq c -quiet $(COQOPTS) $<
+
+run_float_unit_tests: float_unit_tests
+	node --stack-size=10000000 js/run_float_unit_tests.js
 
 clean:
 	rm -f *.wat *.wasm *.cwasm *.tests.*.js *.ir
