@@ -232,11 +232,18 @@ Fixpoint create_case_nested_if_chain (boxed : bool) (v : localidx) (es : list (N
 
 (* **** TRANSLATE PRIMITIVE VALUES **** *)
 
-Definition translate_primitive_value (p : AstCommon.primitive_value) : error Wasm_int.Int64.int :=
-  match projT1 p as tag return prim_value tag -> error Wasm_int.Int64.T with
-  | AstCommon.primInt => fun i => Ret (Wasm_int.Int64.repr (Uint63.to_Z i))
-  | AstCommon.primFloat => fun f => Err "Extraction of floats to Wasm not yet supported"
-  | AstCommon.primString => fun f => Err "Extraction of strings to Wasm not yet supported"
+(* Primitive objects other than primitive integers (floats, strings) and
+   operations on them aren't implemented. Instead of failing at compile time,
+   abort at runtime by setting the out_of_mem flag and returning. *)
+Definition unsupported_primitive_instrs : list basic_instruction :=
+  [ BI_const_num (nat_to_value 1) ; BI_global_set glob_out_of_mem ; BI_return ].
+
+(* None for unsupported primitive values (floats, strings) *)
+Definition translate_primitive_value (p : AstCommon.primitive_value) : option Wasm_int.Int64.int :=
+  match projT1 p as tag return prim_value tag -> option Wasm_int.Int64.T with
+  | AstCommon.primInt => fun i => Some (Wasm_int.Int64.repr (Uint63.to_Z i))
+  | AstCommon.primFloat => fun _ => None
+  | AstCommon.primString => fun _ => None
   end (projT2 p).
 
 
@@ -386,7 +393,9 @@ Fixpoint translate_body (nenv : name_env) (cenv : ctor_env) (lenv: localvar_env)
 
    | Eprim_val x p e' =>
        x_var <- translate_var nenv lenv x "translate_body prim val" ;;
-       val <- translate_primitive_value p ;;
+       match translate_primitive_value p with
+       | None => Ret unsupported_primitive_instrs
+       | Some val =>
        let instrs :=
             [ BI_global_get glob_mem_ptr
             ; BI_const_num (VAL_int64 val)
@@ -404,10 +413,14 @@ Fixpoint translate_body (nenv : name_env) (cenv : ctor_env) (lenv: localvar_env)
        let mem' := snd p in
        following_instr <- translate_body nenv cenv lenv fenv penv e' mem' ;;
        Ret (grow_instr ++ instrs ++ following_instr)
+       end
    | Eprim x p ys e' =>
        match M.get p penv with
        | None => Err "Primitive operation not found in prim_env"
        | Some p' =>
+           match KernameMap.find p'.(prim_name) primop_map with
+           | None => Ret unsupported_primitive_instrs
+           | Some _ =>
            x_var <- translate_var nenv lenv x "translate_exp prim op" ;;
            prim_op_instrs <- translate_primitive_operation nenv lenv p' ys ;;
            let p := call_grow_mem_if_necessary mem 52%N in (* 28 bytes plus 24 for some luft for invariants *)
@@ -415,6 +428,7 @@ Fixpoint translate_body (nenv : name_env) (cenv : ctor_env) (lenv: localvar_env)
            let mem' := snd p in
            following_instr <- translate_body nenv cenv lenv fenv penv e' mem' ;;
            Ret (grow_instr ++ prim_op_instrs ++ [ BI_local_set x_var ]  ++ following_instr)
+           end
        end
    | Ehalt x =>
      x_var <- translate_var nenv lenv x "translate_body halt";;
